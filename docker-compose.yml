@@ -1,0 +1,72 @@
+# Gmail MCP server. Start with scripts/start.sh (or scripts/start.ps1 on Windows).
+#
+# Security posture: the published port is bound to host loopback ONLY, the root
+# filesystem is read-only, all Linux capabilities are dropped, and the container
+# runs as UID 10001. Do not change the port mapping to 0.0.0.0.
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1.0
+
+x-app-env: &app-env
+  # Fixed inside the container; compose maps the host side via HOST_PORT.
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  TOKEN_PATH: /data/token.json
+
+services:
+  gmail-mcp:
+    <<: *hardening
+    image: gmail-mcp-server:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gmail-mcp
+    env_file: .env
+    environment:
+      <<: *app-env
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8765}:8000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 2s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-off interactive sign-in; run via scripts/auth.sh (never started by `up`).
+  # The script publishes the OAuth loopback port with -p 127.0.0.1:8400:8400.
+  auth:
+    <<: *hardening
+    image: gmail-mcp-server:local
+    profiles: ["auth"]
+    env_file: .env
+    environment:
+      <<: *app-env
+    command: ["python", "-m", "gmail_mcp.auth_cli"]
+    volumes:
+      - ./data:/data
+    restart: "no"
+    healthcheck:
+      disable: true
