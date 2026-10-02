@@ -15,12 +15,21 @@ MAX_RECIPIENTS: Final = 50
 MAX_ADDRESS_CHARS: Final = 254
 
 _CONTROL_CHARS: Final = frozenset(chr(c) for c in range(32) if c != 9) | {chr(127)}
+# Unicode line boundaries recognised by str.splitlines() beyond ASCII (NEL, LS, PS).
+_UNICODE_LINE_BREAKS: Final = frozenset({"\u0085", "\u2028", "\u2029"})
 
 
 def contains_control_chars(value: str, *, allow_newlines: bool = False) -> bool:
-    """True if ``value`` has ASCII control characters (CR/LF/NUL, ...) other than tab."""
-    allowed = {"\n", "\r"} if allow_newlines else set()
-    return any(ch in _CONTROL_CHARS and ch not in allowed for ch in value)
+    """True if ``value`` has control characters or line breaks that must not reach a header.
+
+    Covers ASCII controls (CR/LF/NUL, ... but not tab), DEL, and the Unicode line
+    separators U+0085/U+2028/U+2029. With ``allow_newlines`` (message bodies) CR, LF and
+    the Unicode separators are permitted; other controls still are not.
+    """
+    allowed = {"\n", "\r"} | _UNICODE_LINE_BREAKS if allow_newlines else set()
+    return any(
+        (ch in _CONTROL_CHARS or ch in _UNICODE_LINE_BREAKS) and ch not in allowed for ch in value
+    )
 
 
 def _validate_address(value: str) -> str:

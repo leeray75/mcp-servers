@@ -256,3 +256,42 @@ def test_build_mime_refuses_header_injection_even_if_validation_were_bypassed() 
         tools.build_mime(
             to=["a@example.com\r\nBcc: evil@example.com"], cc=[], bcc=[], subject="s", body="b"
         )
+
+
+async def test_thread_body_budget_favours_the_newest_messages(fake_gmail: FakeGmail) -> None:
+    messages = [make_message(f"m{i}", "t1", text="n" * 100) for i in range(8)]
+    fake_gmail.threads["t1"] = {"id": "t1", "messages": messages}
+    thread = await tools.get_thread(
+        _client(fake_gmail), thread_id="t1", fmt="full", max_body_chars=100
+    )
+    assert [m.id for m in thread.messages] == [f"m{i}" for i in range(8)]  # chronological
+    assert thread.messages[-1].body == "n" * 100  # newest keeps its full body
+    assert thread.messages[-5].body == "n" * 100
+    assert [m.body for m in thread.messages[:3]] == ["", "", ""]  # oldest pay the price
+    assert thread.truncated is True
+
+
+def test_references_drop_whole_leading_ids_only() -> None:
+    ids = [f"<{i:04d}-{'x' * 40}@mail.example>" for i in range(80)]
+    limited = tools._limit_references(" ".join(ids))
+    assert len(limited) <= tools.MAX_REFERENCES_CHARS
+    kept = limited.split()
+    assert kept == ids[-len(kept) :]  # a suffix of complete IDs, newest last
+    assert all(t.startswith("<") and t.endswith(">") for t in kept)
+    assert len(kept) < len(ids)
+
+
+def test_references_short_chain_untouched() -> None:
+    assert tools._limit_references("<a@x> <b@x>") == "<a@x> <b@x>"
+
+
+def test_non_ascii_body_is_ascii_safe_on_the_wire() -> None:
+    mime = tools.build_mime(
+        to=["a@example.com"], cc=[], bcc=[], subject="Réunion", body="Héllo ☕ wörld\n" * 50
+    )
+    raw = mime.as_bytes()
+    raw.decode("ascii")  # raises if any 8-bit byte slipped through
+    assert mime["Content-Transfer-Encoding"] in {"quoted-printable", "base64"}
+    parsed = message_from_bytes(raw, policy=policy.default)
+    assert parsed.get_content().replace("\r\n", "\n") == "Héllo ☕ wörld\n" * 50
+    assert parsed["Subject"] == "Réunion"

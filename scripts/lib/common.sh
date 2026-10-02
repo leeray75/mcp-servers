@@ -100,6 +100,12 @@ data_writable() {
 # so no sudo and no world-writable directory are needed.
 ensure_data_dir() {
   mkdir -p "${DATA_DIR}"
+  case "$(cd "${DATA_DIR}" && pwd -P)" in
+    /mnt/*)
+      warn "./data is on the Windows drive (/mnt/...): POSIX file modes are not enforced there, so"
+      warn "other Windows processes can read the token. Clone into the WSL filesystem for stronger isolation."
+      ;;
+  esac
   chmod 700 "${DATA_DIR}" 2>/dev/null || true
   if data_writable; then
     return 0

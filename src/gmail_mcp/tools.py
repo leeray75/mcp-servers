@@ -78,7 +78,9 @@ async def get_thread(
 ) -> ThreadContent:
     """Fetch a thread; bodies are plain text, bounded per message and per thread.
 
-    At most the most recent ``THREAD_MESSAGE_LIMIT`` messages are returned.
+    At most the most recent ``THREAD_MESSAGE_LIMIT`` messages are returned. The body
+    budget is spent newest-first, so the latest messages (the ones needed to reply)
+    are never starved by a long history.
     """
     full = fmt == "full"
     thread = await client.get_thread(
@@ -89,7 +91,7 @@ async def get_thread(
     budget = max_body_chars * THREAD_BODY_BUDGET_FACTOR
     messages: list[MessageContent] = []
     any_truncated = len(kept) < len(raw_messages)
-    for raw in kept:
+    for raw in reversed(kept):
         content = message_to_content(
             raw,
             body_limit=min(max_body_chars, budget),
@@ -99,6 +101,7 @@ async def get_thread(
         budget -= len(content.body or "")
         any_truncated = any_truncated or content.truncated
         messages.append(content)
+    messages.reverse()  # back to chronological order
     return ThreadContent(
         id=str(thread.get("id", thread_id)), messages=messages, truncated=any_truncated
     )
@@ -176,6 +179,14 @@ def build_mime(
     return message
 
 
+def _limit_references(chain: str) -> str:
+    """Keep the newest Message-IDs that fit, dropping whole leading IDs only."""
+    tokens = chain.split()
+    while len(tokens) > 1 and len(" ".join(tokens)) > MAX_REFERENCES_CHARS:
+        tokens.pop(0)
+    return " ".join(tokens)[-MAX_REFERENCES_CHARS:]
+
+
 async def create_draft(
     client: GmailClient,
     *,
@@ -205,7 +216,7 @@ async def create_draft(
         in_reply_to = headers.get("message-id") or None
         if in_reply_to:
             chain = f"{headers.get('references', '')} {in_reply_to}".strip()
-            references = chain[-MAX_REFERENCES_CHARS:]
+            references = _limit_references(chain)
 
     mime = build_mime(
         to=to,

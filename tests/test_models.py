@@ -114,3 +114,21 @@ def test_contains_control_chars() -> None:
     assert contains_control_chars("a\x7fb")
     assert not contains_control_chars("a\tb")
     assert not contains_control_chars("a\nb", allow_newlines=True)
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029", "\u0085", "\x0b", "\x0c", "\x1c"])
+def test_unicode_and_exotic_line_breaks_rejected_in_header_fields(sep: str) -> None:
+    for adapter_type, value in (
+        (Subject, f"Hi{sep}Bcc: evil@example.com"),
+        (EmailAddress, f"a@example.com{sep}"),
+        (SearchQuery, f"from:a{sep}b"),
+    ):
+        with pytest.raises(ValidationError):
+            _ok(adapter_type, value)
+
+
+def test_body_may_contain_unicode_line_separators() -> None:
+    assert _ok(Body, "para one\u2028para two\u2029end")
+    assert contains_control_chars("a\u2028b")
+    assert not contains_control_chars("a\u2028b", allow_newlines=True)
+    assert contains_control_chars("a\x00b", allow_newlines=True)

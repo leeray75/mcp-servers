@@ -191,7 +191,9 @@ def create_server(settings: Settings, client: GmailClient | None = None) -> MCPS
     ) -> DraftCreated:
         """Create a Gmail DRAFT. This never sends anything; the user reviews and sends it in Gmail.
 
-        With reply_to_message_id the draft is threaded under that message."""
+        With reply_to_message_id the draft is threaded under that message. Gmail only
+        groups a draft into the conversation when the subject matches, so pass the
+        original subject (usually 'Re: <original subject>')."""
         return await tools.create_draft(
             gmail,
             to=to,

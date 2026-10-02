@@ -127,3 +127,7 @@ def test_message_to_content_metadata_only_has_no_body() -> None:
     content = message_to_content(make_message(), body_limit=100, include_body=False)
     assert content.body is None
     assert content.attachments == []
+
+
+def test_clean_header_flattens_unicode_line_separators() -> None:
+    assert clean_header("a\u2028b\u0085c") == "a b c"

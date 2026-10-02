@@ -415,3 +415,37 @@ async def test_rejections_never_log_the_presented_token(
 async def test_server_header_not_advertised(http: httpx.AsyncClient) -> None:
     response = await http.get("/healthz")
     assert "server" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("header", "should_pass"),
+    [
+        (None, False),
+        ("", False),
+        ("Bearer", False),
+        ("Bearer wrong", False),
+        ("Basic abc", False),
+        (f"Bearer {FAKE_AUTH_TOKEN}", True),
+    ],
+)
+async def test_every_auth_decision_goes_through_hmac_compare_digest(
+    http: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    header: str | None,
+    should_pass: bool,
+) -> None:
+    results: list[bool] = []
+    real = hmac.compare_digest
+
+    def spy(a: bytes, b: bytes) -> bool:
+        results.append(real(a, b))
+        return results[-1]
+
+    monkeypatch.setattr("gmail_mcp.security.hmac.compare_digest", spy)
+    headers = dict(JSONRPC_ACCEPT)
+    if header is not None:
+        headers["Authorization"] = header
+    response = await http.post("/mcp", json=INITIALIZE, headers=headers)
+    assert len(results) == 1  # exactly one constant-time comparison per request
+    assert (response.status_code == 200) is should_pass
+    assert results[0] is should_pass

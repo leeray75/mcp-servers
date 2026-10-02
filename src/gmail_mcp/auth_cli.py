@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Final
 
 from gmail_mcp.auth import build_flow, write_token
-from gmail_mcp.config import ConfigError, load_settings
+from gmail_mcp.config import ConfigError, Settings, load_settings
 
 REDIRECT_PORT: Final = 8400
 _PROMPT: Final = (
@@ -30,6 +30,18 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 2
 
+    try:
+        return _sign_in(settings)
+    except Exception as exc:  # report the class only: messages may hold secrets
+        print(
+            f"Sign-in failed ({type(exc).__name__}). If you changed the requested "
+            "permissions, tick every box on the consent screen and run the sign-in again.",
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _sign_in(settings: Settings) -> int:
     flow = build_flow(settings, REDIRECT_PORT)
     credentials = flow.run_local_server(
         host="127.0.0.1",  # redirect URI host, which the browser on the host machine uses

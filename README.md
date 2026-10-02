@@ -36,8 +36,10 @@ drafts - and nothing else.**
 - The container runs as UID 10001 with a read-only root filesystem, all capabilities dropped,
   `no-new-privileges`, PID/memory/CPU limits, and the port bound to `127.0.0.1`.
   Never change the port mapping to `0.0.0.0`: this server has no TLS.
-- Only the refresh token and its scopes are stored (`data/token.json`, mode 0600, written
-  atomically). The OAuth client secret lives only in `.env`. Access tokens are memory-only.
+- Only the refresh token and its scopes are stored (`data/token.json`, created with mode 0600,
+  written atomically). **On a WSL `/mnt/c` checkout POSIX permissions are not enforced** (any
+  Windows process running as you can read `data/token.json`); for real file-mode protection
+  clone the repository into the WSL filesystem (for example `~/gmail-mcp-server`). The OAuth client secret lives only in `.env`. Access tokens are memory-only.
 - Logs are JSON on stdout and never contain message bodies, subjects, addresses or
   credentials; a redaction filter scrubs `GOCSPX-...`, `ya29....`, refresh tokens and bearer
   values as defense in depth.
@@ -149,7 +151,8 @@ at startup with a message that names the setting but never echoes secret values.
 | `MAX_BODY_CHARS` | no | `20000` | Truncation limit for returned bodies |
 | `HOST_PORT` | no | `8765` | Host port on 127.0.0.1 (read by compose and the scripts) |
 
-If you narrow `GMAIL_SCOPES`, tools that need a missing scope return a 403 error from Gmail.
+If you narrow `GMAIL_SCOPES` (for example to read-only), `create_draft` is **still listed** by the
+server but every call will fail with a Gmail 403; tools needing a missing scope behave the same.
 The token file records the scopes it was granted; if it does not cover the configured scopes the
 tools ask you to re-run `auth`.
 
@@ -164,7 +167,9 @@ make lock        # re-resolve + re-hash requirements*.txt after changing pyproje
 
 The tests never touch the network or real credentials (the Gmail API is fully mocked).
 
-Dependencies are pinned with hashes in `requirements.txt` (runtime) and `requirements-dev.txt`;
+The transitive set pulled in by `mcp==2.2.0` (including `httpx2`/`httpcore2`, published by the
+pydantic organisation, and `mcp-types`) was checked against the installed package metadata: `mcp`
+declares `httpx2>=2.5.0` and `mcp-types==2.2.0`. Dependencies are pinned with hashes in `requirements.txt` (runtime) and `requirements-dev.txt`;
 the image installs them with `pip --require-hashes --only-binary=:all:`. The base image is pinned
 to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at the top of the
 `Dockerfile`. Run `make audit` regularly (and after each `make lock`).
@@ -186,6 +191,9 @@ to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at t
 | Goose cannot connect from Windows | Check `scripts/status`; confirm WSL localhost forwarding works (`curl http://127.0.0.1:8765/healthz` from Windows) |
 | Tool error `HTTP 403` from Gmail | Gmail API not enabled for the project, or the token lacks a scope |
 | Tool error `HTTP 429` | Gmail rate limit; retry later |
+| `scripts/*` warn that `./data` is on `/mnt/...` | The repo is on the Windows drive: it works, but file modes are not enforced there. Prefer a clone under `~/` in WSL |
+| Auth: "Sign-in failed (...)" | A permission box was unticked or the flow was interrupted; run `auth` again and approve everything |
+| Reply draft is not grouped in the Gmail conversation | Gmail needs the same subject: pass the original subject (usually `Re: ...`) with `reply_to_message_id` |
 | Edited `.env` but nothing changed | `scripts/restart.sh --recreate` (a plain restart keeps the old environment) |
 
 ## Project layout

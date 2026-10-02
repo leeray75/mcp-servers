@@ -28,14 +28,16 @@ TOKEN_FILE_MODE: Final = 0o600
 def write_token(path: Path, refresh_token: str, scopes: Iterable[str]) -> None:
     """Atomically write the token file with mode 0600.
 
-    The data is written to a sibling temp file created with 0600 from the start
-    (no window with looser permissions), fsynced, then renamed over ``path``.
+    The data is written to a sibling temp file that ``mkstemp`` creates with mode 0600
+    from the start (no window with looser permissions), fsynced, then renamed over
+    ``path``. There is deliberately no follow-up ``chmod``: it adds nothing, and it
+    fails with EPERM on WSL ``/mnt/c`` (9p/drvfs) bind mounts, where POSIX modes are
+    not enforced at all.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"refresh_token": refresh_token, "scopes": sorted(set(scopes))})
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".token-", suffix=".tmp")
     try:
-        os.chmod(tmp_name, TOKEN_FILE_MODE)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()

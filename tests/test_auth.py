@@ -165,3 +165,48 @@ def test_auth_cli_fails_when_scope_not_granted(
 def test_auth_cli_config_error_exits_2(capsys: pytest.CaptureFixture[str]) -> None:
     assert auth_cli.main() == 2
     assert "Invalid configuration" in capsys.readouterr().err
+
+
+def test_write_token_survives_filesystems_that_reject_chmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WSL /mnt/c (9p/drvfs) bind mounts answer chmod with EPERM; sign-in must still work."""
+
+    def deny(*args: object, **kwargs: object) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "chmod", deny)
+    monkeypatch.setattr(os, "fchmod", deny, raising=False)
+    path = tmp_path / "token.json"
+    write_token(path, FAKE_REFRESH_TOKEN, SCOPES)
+    assert read_token(path)[0] == FAKE_REFRESH_TOKEN
+
+
+class _ExplodingFlow:
+    def run_local_server(self, **_: object) -> None:
+        raise Warning("Scope has changed from X to Y ya29.SECRET")
+
+
+def test_auth_cli_flow_exception_is_concise_and_secret_free(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(auth_cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(auth_cli, "build_flow", lambda s, port: _ExplodingFlow())
+    assert auth_cli.main() == 1
+    err = capsys.readouterr().err
+    assert "Sign-in failed (Warning)" in err
+    assert "SECRET" not in err
+    assert not Path(settings.token_path).exists()
+
+
+def test_auth_cli_token_write_failure_is_reported(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_main(monkeypatch, settings, _FakeCreds(FAKE_REFRESH_TOKEN, SCOPES))
+
+    def fail(*args: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(auth_cli, "write_token", fail)
+    assert auth_cli.main() == 1
+    assert "Sign-in failed (OSError)" in capsys.readouterr().err

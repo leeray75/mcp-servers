@@ -75,7 +75,7 @@ def truncate(text: str, limit: int) -> tuple[str, bool]:
 def clean_header(value: str) -> str:
     """Make an untrusted header value single-line and length-bounded."""
     if contains_control_chars(value):
-        value = "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in value)
+        value = "".join(" " if contains_control_chars(c) else c for c in value)
     return value[:MAX_HEADER_CHARS]
 
 
