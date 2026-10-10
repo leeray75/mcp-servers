@@ -68,12 +68,15 @@ scripts/rebuild.sh && scripts/smoke.sh
 
 ## Feature workflow and documentation
 
-Features follow a spec-driven cycle, recorded in the server's `docs/` folder:
+This project uses **Spec-Driven Development (SDD)**, whether the work is done by a person or an AI agent. The full
+workflow, including the rules every AI agent must follow, is in [AGENTS.md](AGENTS.md). In short:
 
-1. **Spec**: update `docs/SPEC.md`, or add an amendment (for example `docs/SPEC-search-filter.md`) that states what it overrides.
-2. **Implementation report**: `docs/reports/<feature>/implementation-report.md`.
-3. **Review rounds** and **fix rounds**: `review-round-N.md` / `fix-round-N.md`.
-4. **Summary report**: `summary-report.md`.
+1. **Plan** with the human: resolve every ambiguity up front, as choices with a recommended option and an "Other" option.
+2. **Spec**: update `docs/SPEC.md`, or add an amendment (for example `docs/SPEC-search-filter.md`) that states what it overrides.
+3. **Approval gate**: no code is written until the human explicitly approves the spec (approve / revise / reject / wait / other).
+4. **Implementation**, with a report: `docs/reports/<feature>/implementation-report.md`.
+5. **Independent review** and **fix rounds**: `review-round-N.md` / `fix-round-N.md`, for at most 5 rounds before escalating to the human.
+6. **Summary report**: `summary-report.md`.
 
 Also, for every user-visible change:
 

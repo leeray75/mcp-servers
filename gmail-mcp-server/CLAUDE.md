@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Process: Spec-Driven Development is mandatory.** Changes to this server follow the SDD workflow in
+> [`../AGENTS.md`](../AGENTS.md): plan with the human, write a spec, get explicit approval, then implement, review
+> (fix loop, max 5 rounds) and write a summary report. This file stays authoritative for this server's technical
+> invariants; AGENTS.md governs process.
+
 ## What this is
 
 A minimal, self-owned MCP server (Python 3.12, official `mcp` SDK, Google client libs) giving an agent read access to Gmail plus draft creation. Streamable HTTP on 127.0.0.1 behind a bearer token, run in Docker inside WSL2. `docs/SPEC.md` is the authoritative spec; `docs/PLAN.md` and `docs/reports/` hold the build plan and review rounds. The server-hosted re-authentication feature has its own plan/spec in `docs/reauth/` and reports in `docs/reports/reauth/`.

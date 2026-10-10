@@ -83,6 +83,7 @@ mcp-servers/
 ├── CHANGELOG.md         # repository-level changes
 ├── CONTRIBUTING.md      # development workflow and conventions
 ├── SECURITY.md          # security model and vulnerability reporting
+├── AGENTS.md            # mandatory SDD workflow for AI agents (any harness)
 ├── LICENSE
 ├── CLAUDE.md            # guidance for AI coding agents
 └── <name>-mcp-server/
@@ -114,6 +115,12 @@ Run everything from inside a server's directory.
 
 Coverage gates are 85% (sports: 90%). Tests never touch the network. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 full workflow, including the spec → review → fix documentation cycle.
+
+## Development process: Spec-Driven Development
+
+All changes, including AI-assisted ones, follow a mandatory **Spec-Driven Development** workflow. It replaces vibe
+coding with: planning with a human → written spec → explicit human approval → implementation → independent review with
+a fix loop (max 5 rounds) → summary report. AI agents: read [AGENTS.md](AGENTS.md) before changing anything.
 
 ## Security
 

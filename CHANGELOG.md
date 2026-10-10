@@ -21,3 +21,7 @@ Each server keeps its own changelog for its code and behavior:
 - Root documentation: `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE` (MIT)
   and `CLAUDE.md`.
 - `CHANGELOG.md` for `vision-mcp-server`, `sports-mcp-server` and `firecrawl-mcp-server`.
+- `AGENTS.md`: a mandatory, harness-agnostic Spec-Driven Development workflow for AI agents (planning with the human
+  using recommended choices plus "Other", spec, explicit approval gate, implementer and reviewer subagents with a fix
+  loop of at most 5 rounds, summary report). Referenced from the root and per-server `CLAUDE.md`, `README.md` and
+  `CONTRIBUTING.md`.

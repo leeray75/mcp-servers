@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Mandatory: Spec-Driven Development.** Every change follows the SDD workflow in [AGENTS.md](AGENTS.md): plan with
+> the human (choice questions with a recommended option and "Other"), write a spec, **wait for explicit human approval**,
+> then implement with an implementer subagent, review with a separate reviewer subagent (fix loop, max 5 rounds) and
+> finish with a summary report. Never write code before the spec is approved. Use AskUserQuestion for choices and the
+> Agent tool for the implementer and reviewer subagents.
+
+@AGENTS.md
+
 ## What this is
 
 A monorepo of four independent, self-hosted MCP servers. Each lives in its own directory with its own toolchain,
@@ -40,4 +48,5 @@ Common to every server:
 
 Each server has `docs/SPEC.md` as the authoritative spec, and features are built through a spec → implementation report →
 review rounds → fix rounds → summary cycle recorded under `docs/reports/` (feature-specific subfolders such as
-`docs/reports/reauth/` and `docs/reports/search-filter/`). Follow that convention for new features.
+`docs/reports/reauth/` and `docs/reports/search-filter/`). This is the SDD workflow defined in [AGENTS.md](AGENTS.md);
+follow it for every change.
