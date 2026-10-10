@@ -1,0 +1,38 @@
+# Secrets and runtime state
+.env
+.env.*
+data/
+*.token.json
+token.json
+client_secret*.json
+credentials.json
+
+# VCS and editor
+.git/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+
+# Python and tool caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+
+# Not needed in the image
+tests/
+docs/
+scripts/
+*.md
+!README.md
+requirements-dev.txt
+Makefile
+docker-compose.yml
+Dockerfile

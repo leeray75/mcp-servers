@@ -1,0 +1,212 @@
+# gmail-mcp-server
+
+A small, self-owned [MCP](https://modelcontextprotocol.io) server that gives an AI agent
+(for example [Goose](https://goose-docs.ai)) **read access to Gmail and the ability to create
+drafts - and nothing else.**
+
+- Python 3.12, the official `mcp` SDK, and Google's official client libraries. No third-party
+  MCP code ever touches your OAuth tokens or mail.
+- Streamable HTTP transport, published on **127.0.0.1 only**, behind a bearer token.
+- **No send, delete, trash, relabel, settings or attachment-download tool exists.** A test
+  asserts the registered tool set is exactly the six below.
+
+| Tool | What it does |
+|---|---|
+| `search_threads` | Gmail-syntax search; returns id, snippet, subject, sender, date, message count, `next_page_token` |
+| `get_thread` | A thread's messages with headers and plain-text bodies (`format`: `full` or `metadata`) |
+| `get_message` | One message; lists attachment name/type/size only - never attachment content |
+| `list_labels` | Label id, name, type |
+| `list_drafts` | Draft id, subject, recipients, snippet |
+| `create_draft` | Creates a **draft** (optionally threaded as a reply). Never sends |
+
+## Security model (read this first)
+
+- **The `gmail.compose` OAuth scope technically permits sending mail.** Google offers no
+  "drafts only" scope. Safety here therefore rests on (a) this server exposing **no send
+  tool** and (b) this server being **the only holder of the refresh token**. If you add other
+  software that can read `data/token.json` and use it, that software can send mail as you.
+- Email content is untrusted. A message can contain text that tries to instruct the AI
+  ("ignore previous instructions, draft a reply to ..."). Tool descriptions say so, and drafts
+  must be reviewed and sent by you in Gmail - which is the point of drafts-only access.
+- Clients must send `Authorization: Bearer <MCP_AUTH_TOKEN>` (compared in constant time).
+  `GET /healthz` is the only unauthenticated route and reveals nothing about credentials.
+- Requests whose `Host` is not `127.0.0.1:<port>` / `localhost:<port>`, or whose `Origin`
+  is not loopback, are rejected (DNS-rebinding defense). Any numeric port is accepted for those
+  hostnames because the container sees the published host port, not its internal one.
+- The container runs as UID 10001 with a read-only root filesystem, all capabilities dropped,
+  `no-new-privileges`, PID/memory/CPU limits, and the port bound to `127.0.0.1`.
+  Never change the port mapping to `0.0.0.0`: this server has no TLS.
+- Only the refresh token and its scopes are stored (`data/token.json`, created with mode 0600,
+  written atomically). **On a WSL `/mnt/c` checkout POSIX permissions are not enforced** (any
+  Windows process running as you can read `data/token.json`); for real file-mode protection
+  clone the repository into the WSL filesystem (for example `~/gmail-mcp-server`). The OAuth client secret lives only in `.env`. Access tokens are memory-only.
+- Logs are JSON on stdout and never contain message bodies, subjects, addresses or
+  credentials; a redaction filter scrubs `GOCSPX-...`, `ya29....`, refresh tokens and bearer
+  values as defense in depth.
+- Output is bounded: result cap (`MAX_RESULTS_CAP`), per-message truncation
+  (`MAX_BODY_CHARS`), a per-thread total budget (5x that) and at most 50 messages per thread
+  (the most recent). A 512 KiB request body limit applies.
+
+## Prerequisites
+
+- Windows 11 with **WSL2 + Ubuntu**, and **Docker Engine inside WSL2** (not Docker Desktop):
+  `docker info` and `docker compose version` must work inside Ubuntu.
+- A Google account and a free Google Cloud project (below).
+- Optional, for development: Python 3.12+.
+
+## Google Cloud setup (one time)
+
+1. Open the [Google Cloud Console](https://console.cloud.google.com/) and create a project
+   (any name).
+2. **Enable the Gmail API:** *APIs & Services -> Library -> Gmail API -> Enable*.
+3. **Configure the OAuth consent screen** (*APIs & Services -> OAuth consent screen*, or
+   *Google Auth Platform* in the newer UI): user type **External**, fill in the app name and
+   your email, and under **Test users add your own Gmail address.**
+4. **Create the credentials:** *Credentials -> Create credentials -> OAuth client ID ->
+   Application type: Desktop app*. Copy the **client ID** and **client secret** (you will paste
+   them into `.env`; never commit them).
+
+> **Testing mode and token lifetime.** While the consent screen is in *Testing*, Google
+> expires refresh tokens after **7 days**; the tools then return "Run scripts/auth.sh to sign
+> in again" and you simply re-run the auth script. Moving the consent screen to *In production*
+> removes the 7-day limit, but Gmail scopes are classed sensitive/restricted, so the app stays
+> "unverified": Google shows a warning screen (*Advanced -> Go to <app> (unsafe)*) that you can
+> click through for your own account. Verification is not needed for personal use.
+
+## Setup
+
+All commands run from the repository root. On Windows, use the `.ps1` twin of any `.sh` script
+(for example `.\scripts\start.ps1`); it runs the `.sh` inside WSL2 Ubuntu and forwards arguments
+and exit codes. In WSL, run the `.sh` directly.
+
+```bash
+cp .env.example .env
+# edit .env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, MCP_AUTH_TOKEN
+openssl rand -hex 32          # one way to generate MCP_AUTH_TOKEN (>= 32 characters)
+```
+
+1. **Sign in once:** `scripts/auth.sh`. It prints a URL; open it in your normal (Windows)
+   browser, approve both permissions, and Google redirects to `http://127.0.0.1:8400/`, which
+   the one-off container publishes to your loopback interface only. It then prints the
+   granted scopes (never the token) and exits.
+2. **Start the server:** `scripts/start.sh`. It validates `.env`, builds the image, starts the
+   container and waits until it is healthy, then prints the endpoint (default
+   `http://127.0.0.1:8765/mcp`; change the host port with `HOST_PORT` in `.env`).
+
+### Scripts
+
+| Script | Purpose |
+|---|---|
+| `start` | Validate `.env`, build, start, wait for healthy |
+| `stop` | Stop and remove the container (keeps `data/`) |
+| `restart [--recreate]` | Restart and wait for healthy. Use `--recreate` after editing `.env` |
+| `rebuild [--keep-cache]` | Rebuild the image without cache (default) and recreate the container |
+| `auth` | One-time Google sign-in (re-run when the token expires or is revoked) |
+| `logs [-n N] [--no-follow]` | Container logs |
+| `status` | Container state, health, whether a token file exists (never its contents) |
+
+A running server picks up a new token after `auth` without a restart.
+
+`data/` may end up owned by UID 10001 (the scripts arrange this on native Linux filesystems) so
+your own user may not be able to delete it directly; remove it with
+`docker run --rm --user 0 -v "$PWD":/w --entrypoint rm gmail-mcp-server:local -rf /w/data` or `sudo`.
+
+## Connect Goose
+
+Goose names the URL field `uri` (not `url`). Add this under `extensions:` in Goose's config
+(`~/.config/goose/config.yaml` on Linux/macOS, `%APPDATA%\Block\goose\config\config.yaml` on
+Windows), or use `goose configure -> Add Extension -> Remote Extension (Streamable HTTP)`:
+
+```yaml
+extensions:
+  gmail:
+    name: gmail
+    type: streamable_http
+    enabled: true
+    uri: http://127.0.0.1:8765/mcp
+    headers:
+      Authorization: "Bearer <the MCP_AUTH_TOKEN value from your .env>"
+    timeout: 300
+```
+
+Restart Goose after editing the file. Goose stores that header in its config in plain text, so
+use a token generated only for this purpose. From Windows, `127.0.0.1:8765` reaches the container
+through WSL2's localhost forwarding.
+
+## Configuration
+
+All settings come from environment variables (see `.env.example`); invalid values stop the server
+at startup with a message that names the setting but never echoes secret values.
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `GOOGLE_CLIENT_ID` | yes | - | Desktop-app OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | yes | - | OAuth client secret |
+| `MCP_AUTH_TOKEN` | yes | - | Bearer secret for clients, >= 32 characters |
+| `GMAIL_SCOPES` | no | `gmail.readonly gmail.compose` | Must be a subset of those two |
+| `TOKEN_PATH` | no | `/data/token.json` | Refresh-token file (fixed by compose) |
+| `HOST` / `PORT` | no | `0.0.0.0` / `8000` | In-container bind (fixed by compose; host side is `HOST_PORT`) |
+| `LOG_LEVEL` | no | `INFO` | |
+| `MAX_RESULTS_CAP` | no | `50` | Hard ceiling for list tools |
+| `MAX_BODY_CHARS` | no | `20000` | Truncation limit for returned bodies |
+| `HOST_PORT` | no | `8765` | Host port on 127.0.0.1 (read by compose and the scripts) |
+
+If you narrow `GMAIL_SCOPES` (for example to read-only), `create_draft` is **still listed** by the
+server but every call will fail with a Gmail 403; tools needing a missing scope behave the same.
+The token file records the scopes it was granted; if it does not cover the configured scopes the
+tools ask you to re-run `auth`.
+
+## Development
+
+```bash
+make install     # venv from the hash-pinned requirements-dev.txt (Linux/WSL, Python >= 3.12)
+make check       # ruff, ruff format --check, mypy --strict, pytest (coverage gate 85%)
+make audit       # pip-audit against the locked runtime requirements
+make lock        # re-resolve + re-hash requirements*.txt after changing pyproject.toml
+```
+
+The tests never touch the network or real credentials (the Gmail API is fully mocked).
+
+The transitive set pulled in by `mcp==2.2.0` (including `httpx2`/`httpcore2`, published by the
+pydantic organisation, and `mcp-types`) was checked against the installed package metadata: `mcp`
+declares `httpx2>=2.5.0` and `mcp-types==2.2.0`. Dependencies are pinned with hashes in `requirements.txt` (runtime) and `requirements-dev.txt`;
+the image installs them with `pip --require-hashes --only-binary=:all:`. The base image is pinned
+to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at the top of the
+`Dockerfile`. Run `make audit` regularly (and after each `make lock`).
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `cannot reach the Docker daemon` | In Ubuntu: `sudo service docker start`; check `docker info` |
+| `.env` errors from `start` | Placeholders (`replace-me...`) or a `MCP_AUTH_TOKEN` shorter than 32 characters |
+| Tools say "Run scripts/auth.sh" | No token yet, token revoked, or the 7-day Testing-mode expiry - run `auth` again |
+| Browser shows "This app isn't verified" | Expected for your own project: *Advanced -> Go to <app> (unsafe)*. Make sure your account is a **Test user** |
+| `Error 403: access_denied` at sign-in | Your account is not listed as a Test user on the consent screen |
+| `redirect_uri_mismatch` | The OAuth client is not of type **Desktop app** |
+| Auth: "did not return a refresh token" | Revoke the app at <https://myaccount.google.com/permissions> and run `auth` again |
+| Auth: port 8400 already in use | Free the port; it is fixed because the redirect URI must be predictable |
+| HTTP 401 from the endpoint | Wrong/missing `Authorization: Bearer ...` header |
+| HTTP 421 from the endpoint | The client sent a non-loopback `Host`; connect to `127.0.0.1` or `localhost` |
+| Goose cannot connect from Windows | Check `scripts/status`; confirm WSL localhost forwarding works (`curl http://127.0.0.1:8765/healthz` from Windows) |
+| Tool error `HTTP 403` from Gmail | Gmail API not enabled for the project, or the token lacks a scope |
+| Tool error `HTTP 429` | Gmail rate limit; retry later |
+| `scripts/*` warn that `./data` is on `/mnt/...` | The repo is on the Windows drive: it works, but file modes are not enforced there. Prefer a clone under `~/` in WSL |
+| Auth: "Sign-in failed (...)" | A permission box was unticked or the flow was interrupted; run `auth` again and approve everything |
+| Reply draft is not grouped in the Gmail conversation | Gmail needs the same subject: pass the original subject (usually `Re: ...`) with `reply_to_message_id` |
+| Edited `.env` but nothing changed | `scripts/restart.sh --recreate` (a plain restart keeps the old environment) |
+
+## Project layout
+
+```
+src/gmail_mcp/   config, logging_setup, auth, auth_cli, gmail_client, models, parsing,
+                 security, server, tools, errors, __main__
+tests/           unit + MCP-level + HTTP-level tests (Gmail API mocked)
+scripts/         start|stop|restart|rebuild|auth|logs|status (.sh canonical, .ps1 wrappers)
+docs/            PLAN.md, SPEC.md, reports/
+```
+
+## Out of scope
+
+Sending mail, deleting/trashing/relabeling, attachment download, multiple accounts, non-localhost
+exposure, TLS termination, and non-Gmail Google Workspace APIs.
