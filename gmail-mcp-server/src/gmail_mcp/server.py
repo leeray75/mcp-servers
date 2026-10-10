@@ -41,6 +41,7 @@ from gmail_mcp.models import (
     ThreadContent,
 )
 from gmail_mcp.security import HEALTH_PATH, BearerAuthMiddleware, HostGuardMiddleware
+from gmail_mcp.signin import SignInService
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,9 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def _instrumented(name: str) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
+def _instrumented(
+    name: str, host_port: int
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """Log duration/outcome (never arguments or results) and map failures to ``ToolError``."""
 
     def decorator(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
@@ -93,7 +96,7 @@ def _instrumented(name: str) -> Callable[[Callable[P, Awaitable[R]]], Callable[P
                 return await func(*args, **kwargs)
             except GmailMcpError as exc:
                 outcome = "error"
-                raise ToolError(str(exc)) from None
+                raise ToolError(exc.user_message(host_port)) from None
             except Exception as exc:
                 outcome = f"internal_error:{type(exc).__name__}"
                 raise ToolError("Internal server error; see the server logs.") from None
@@ -122,10 +125,11 @@ def create_server(settings: Settings, client: GmailClient | None = None) -> MCPS
     gmail = client or GmailClient(lambda: build_service(settings))
     cap = settings.max_results_cap
     body_limit = settings.max_body_chars
+    port = settings.host_port
     server = MCPServer(SERVER_NAME, instructions=INSTRUCTIONS, version=__version__)
 
     @server.tool(name="search_threads", annotations=READ_ONLY, description=_DESC_SEARCH_THREADS)
-    @_instrumented("search_threads")
+    @_instrumented("search_threads", port)
     async def search_threads(
         query: SearchQuery,
         max_results: Annotated[int, Field(ge=1, le=cap, description="Page size.")] = 10,
@@ -140,7 +144,7 @@ def create_server(settings: Settings, client: GmailClient | None = None) -> MCPS
         )
 
     @server.tool(name="get_thread", annotations=READ_ONLY, description=_DESC_GET_THREAD)
-    @_instrumented("get_thread")
+    @_instrumented("get_thread", port)
     async def get_thread(
         thread_id: GmailId,
         format: Annotated[
@@ -155,7 +159,7 @@ def create_server(settings: Settings, client: GmailClient | None = None) -> MCPS
         )
 
     @server.tool(name="get_message", annotations=READ_ONLY, description=_DESC_GET_MESSAGE)
-    @_instrumented("get_message")
+    @_instrumented("get_message", port)
     async def get_message(message_id: GmailId) -> MessageContent:
         """Get one message with headers, plain-text body and attachment metadata.
 
@@ -163,13 +167,13 @@ def create_server(settings: Settings, client: GmailClient | None = None) -> MCPS
         return await tools.get_message(gmail, message_id=message_id, max_body_chars=body_limit)
 
     @server.tool(name="list_labels", annotations=READ_ONLY)
-    @_instrumented("list_labels")
+    @_instrumented("list_labels", port)
     async def list_labels() -> LabelsResult:
         """List the mailbox's labels (id, name, type)."""
         return await tools.list_labels(gmail)
 
     @server.tool(name="list_drafts", annotations=READ_ONLY)
-    @_instrumented("list_drafts")
+    @_instrumented("list_drafts", port)
     async def list_drafts(
         max_results: Annotated[int, Field(ge=1, le=cap, description="Page size.")] = 10,
         page_token: PageToken | None = None,
@@ -180,7 +184,7 @@ def create_server(settings: Settings, client: GmailClient | None = None) -> MCPS
         )
 
     @server.tool(name="create_draft", annotations=CREATE_DRAFT)
-    @_instrumented("create_draft")
+    @_instrumented("create_draft", port)
     async def create_draft(
         to: Annotated[list[EmailAddress], Field(min_length=1, max_length=MAX_RECIPIENTS)],
         subject: Subject,
@@ -214,14 +218,15 @@ async def healthz(request: Request) -> Response:
 
 
 def create_app(settings: Settings, client: GmailClient | None = None) -> Starlette:
-    """Build the ASGI app: MCP at ``/mcp``, ``/healthz``, Host guard and bearer auth.
+    """Build the ASGI app: MCP at ``/mcp``, ``/healthz``, sign-in routes, Host guard, bearer auth.
 
     Runs stateless with JSON responses, so a client keeps working across server
     restarts (there is no session to lose) and no per-session memory accumulates.
     """
     register_secret(settings.mcp_auth_token.get_secret_value())
     register_secret(settings.google_client_secret.get_secret_value())
-    server = create_server(settings, client)
+    gmail = client or GmailClient(lambda: build_service(settings))
+    server = create_server(settings, gmail)
     app = server.streamable_http_app(
         stateless_http=True,
         json_response=True,
@@ -234,6 +239,7 @@ def create_app(settings: Settings, client: GmailClient | None = None) -> Starlet
         host=settings.host,
     )
     app.add_route(HEALTH_PATH, healthz, methods=["GET"])
+    app.router.routes.extend(SignInService(settings, gmail.reset).routes())
     # Last added is outermost: Host guard runs first, then bearer auth.
     app.add_middleware(BearerAuthMiddleware, token=settings.mcp_auth_token.get_secret_value())
     app.add_middleware(HostGuardMiddleware)

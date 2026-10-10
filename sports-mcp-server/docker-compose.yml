@@ -1,0 +1,51 @@
+# Sports MCP server. Start with scripts/start.sh (or scripts/start.ps1 on Windows).
+#
+# Security posture: the published port is bound to host loopback ONLY, the root
+# filesystem is read-only, all Linux capabilities are dropped, and the container runs as
+# UID 10001. The only outbound traffic it needs is HTTPS to ESPN's API host. It stores
+# nothing on disk and mounts no host folders. Do not change the port mapping to 0.0.0.0.
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1.0
+
+services:
+  sports-mcp:
+    <<: *hardening
+    image: sports-mcp-server:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sports-mcp
+    env_file: .env
+    environment:
+      # Fixed inside the container; compose maps the host side via HOST_PORT.
+      HOST: "0.0.0.0"
+      PORT: "8000"
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8767}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 2s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

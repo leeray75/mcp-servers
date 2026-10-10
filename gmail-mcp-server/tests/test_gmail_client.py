@@ -188,3 +188,12 @@ async def test_each_method_issues_the_expected_call() -> None:
     creates = [kw for label, kw in calls if label == "drafts.create"]
     assert creates[0]["body"] == {"message": {"raw": "cmF3", "threadId": "t9"}}
     assert creates[1]["body"] == {"message": {"raw": "cmF3"}}
+
+
+async def test_reset_forces_the_factory_to_run_again() -> None:
+    factory = MagicMock(return_value=service_with_execute(lambda **_: {"labels": []}))
+    client = GmailClient(factory)
+    await client.list_labels()
+    client.reset()
+    await client.list_labels()
+    assert factory.call_count == 2

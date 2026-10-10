@@ -89,3 +89,10 @@ def test_configure_logging_installs_single_json_handler(
     captured = capsys.readouterr().out.strip().splitlines()
     assert json.loads(captured[-1])["message"] == "hello"
     assert len(logging.getLogger().handlers) == 1
+
+
+def test_google_authorization_codes_are_scrubbed() -> None:
+    code = "4/0AbCdEfGhIjKlMnOpQr_stUv-123"
+    out = redact(f"callback ?code={code}&x=1 and 14/05 stays")
+    assert code not in out
+    assert "14/05 stays" in out

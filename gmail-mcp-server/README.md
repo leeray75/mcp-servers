@@ -29,7 +29,20 @@ drafts - and nothing else.**
   ("ignore previous instructions, draft a reply to ..."). Tool descriptions say so, and drafts
   must be reviewed and sent by you in Gmail - which is the point of drafts-only access.
 - Clients must send `Authorization: Bearer <MCP_AUTH_TOKEN>` (compared in constant time).
-  `GET /healthz` is the only unauthenticated route and reveals nothing about credentials.
+  The only unauthenticated routes are `GET /healthz` (reveals nothing about credentials) and
+  the two browser sign-in routes `GET /auth` and `GET /oauth2callback` (exact paths, see below).
+- **Sign-in routes.** A browser cannot send the bearer header, so `/auth` and `/oauth2callback`
+  are open, but only through the loopback Host/Origin guard. Each sign-in uses a random,
+  single-use `state` (expires after 10 minutes, at most 8 pending), PKCE (S256), static
+  script-free pages that echo nothing from the request, `no-store`/CSP/`no-referrer` headers,
+  and the token is saved only if Google returns a refresh token covering every configured
+  scope. **Residual risk:** any local process, or a web page you visit, can send your browser
+  to `/auth` and start a sign-in, but nothing is stored unless *you* approve Google's consent
+  screen. A local process that can already read `data/token.json` is outside this server's
+  threat model. A cross-site page can also hit `/auth` repeatedly to evict your pending
+  attempt (the cap is 8); browsers send `Sec-Fetch-Site`, and `/auth` rejects cross-site
+  requests unless they are user-activated top-level navigations (a real click), but a hostile local non-browser process is not stopped. The
+  worst case is a failed sign-in you simply retry.
 - Requests whose `Host` is not `127.0.0.1:<port>` / `localhost:<port>`, or whose `Origin`
   is not loopback, are rejected (DNS-rebinding defense). Any numeric port is accepted for those
   hostnames because the container sees the published host port, not its internal one.
@@ -67,9 +80,9 @@ drafts - and nothing else.**
    them into `.env`; never commit them).
 
 > **Testing mode and token lifetime.** While the consent screen is in *Testing*, Google
-> expires refresh tokens after **7 days**; the tools then return "Run scripts/auth.sh to sign
-> in again" and you simply re-run the auth script. Moving the consent screen to *In production*
-> removes the 7-day limit, but Gmail scopes are classed sensitive/restricted, so the app stays
+> expires refresh tokens after **7 days**; the tools then return an error with a sign-in
+> link (see "Re-authenticating" below) and you simply click it or re-run the auth script.
+> Moving the consent screen to *In production* removes the 7-day limit, but Gmail scopes are classed sensitive/restricted, so the app stays
 > "unverified": Google shows a warning screen (*Advanced -> Go to <app> (unsafe)*) that you can
 > click through for your own account. Verification is not needed for personal use.
 
@@ -85,10 +98,11 @@ cp .env.example .env
 openssl rand -hex 32          # one way to generate MCP_AUTH_TOKEN (>= 32 characters)
 ```
 
-1. **Sign in once:** `scripts/auth.sh`. It prints a URL; open it in your normal (Windows)
-   browser, approve both permissions, and Google redirects to `http://127.0.0.1:8400/`, which
-   the one-off container publishes to your loopback interface only. It then prints the
-   granted scopes (never the token) and exits.
+1. **Sign in once:** `scripts/auth.sh` (Windows: `.\scripts\auth.ps1`). It opens your browser
+   (`wslview`, then `explorer.exe`, then `xdg-open`; otherwise it prints the URL), you approve
+   both permissions, and it exits. With the server not yet running it uses a one-off container
+   (Google redirects to `http://127.0.0.1:8400/`, published to loopback only) and prints the
+   granted scopes (never the token). Pass `--no-browser` to only print the URL.
 2. **Start the server:** `scripts/start.sh`. It validates `.env`, builds the image, starts the
    container and waits until it is healthy, then prints the endpoint (default
    `http://127.0.0.1:8765/mcp`; change the host port with `HOST_PORT` in `.env`).
@@ -101,11 +115,20 @@ openssl rand -hex 32          # one way to generate MCP_AUTH_TOKEN (>= 32 charac
 | `stop` | Stop and remove the container (keeps `data/`) |
 | `restart [--recreate]` | Restart and wait for healthy. Use `--recreate` after editing `.env` |
 | `rebuild [--keep-cache]` | Rebuild the image without cache (default) and recreate the container |
-| `auth` | One-time Google sign-in (re-run when the token expires or is revoked) |
+| `auth [--no-browser]` | Google sign-in (re-run when the token expires or is revoked); opens the browser automatically |
 | `logs [-n N] [--no-follow]` | Container logs |
 | `status` | Container state, health, whether a token file exists (never its contents) |
 
 A running server picks up a new token after `auth` without a restart.
+
+### Re-authenticating
+
+When the refresh token expires (every 7 days while the consent screen is in *Testing*) or is
+revoked, Goose's tool error contains a link such as `http://127.0.0.1:8765/auth` (it follows
+`HOST_PORT`). Click it, approve access in Google, and see "Gmail is connected"; the next tool
+call works, no restart needed. Alternatively run `scripts/auth.ps1` (Windows) or
+`scripts/auth.sh` (WSL): with the server running it opens the same page and waits until the
+token file changes; otherwise it falls back to the one-off container and opens the Google URL.
 
 `data/` may end up owned by UID 10001 (the scripts arrange this on native Linux filesystems) so
 your own user may not be able to delete it directly; remove it with
@@ -149,7 +172,7 @@ at startup with a message that names the setting but never echoes secret values.
 | `LOG_LEVEL` | no | `INFO` | |
 | `MAX_RESULTS_CAP` | no | `50` | Hard ceiling for list tools |
 | `MAX_BODY_CHARS` | no | `20000` | Truncation limit for returned bodies |
-| `HOST_PORT` | no | `8765` | Host port on 127.0.0.1 (read by compose and the scripts) |
+| `HOST_PORT` | no | `8765` | Host port on 127.0.0.1 (read by compose and the scripts, and by the server to build the sign-in link and OAuth redirect URI) |
 
 If you narrow `GMAIL_SCOPES` (for example to read-only), `create_draft` is **still listed** by the
 server but every call will fail with a Gmail 403; tools needing a missing scope behave the same.
@@ -180,7 +203,7 @@ to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at t
 |---|---|
 | `cannot reach the Docker daemon` | In Ubuntu: `sudo service docker start`; check `docker info` |
 | `.env` errors from `start` | Placeholders (`replace-me...`) or a `MCP_AUTH_TOKEN` shorter than 32 characters |
-| Tools say "Run scripts/auth.sh" | No token yet, token revoked, or the 7-day Testing-mode expiry - run `auth` again |
+| Tools say "Gmail is not authorised" | No token yet, token revoked, or the 7-day Testing-mode expiry - click the link in the message or run `auth` |
 | Browser shows "This app isn't verified" | Expected for your own project: *Advanced -> Go to <app> (unsafe)*. Make sure your account is a **Test user** |
 | `Error 403: access_denied` at sign-in | Your account is not listed as a Test user on the consent screen |
 | `redirect_uri_mismatch` | The OAuth client is not of type **Desktop app** |
@@ -194,16 +217,18 @@ to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at t
 | `scripts/*` warn that `./data` is on `/mnt/...` | The repo is on the Windows drive: it works, but file modes are not enforced there. Prefer a clone under `~/` in WSL |
 | Auth: "Sign-in failed (...)" | A permission box was unticked or the flow was interrupted; run `auth` again and approve everything |
 | Reply draft is not grouped in the Gmail conversation | Gmail needs the same subject: pass the original subject (usually `Re: ...`) with `reply_to_message_id` |
+| The sign-in link in Goose's error does not load | The server is not running or `HOST_PORT` differs; start it (`scripts/start.sh`) or use `scripts/auth.ps1`, which falls back to a one-off container |
+| Google shows `redirect_uri_mismatch` | The OAuth client must be of type **Desktop app** (it allows any loopback port); recreate it as Desktop |
 | Edited `.env` but nothing changed | `scripts/restart.sh --recreate` (a plain restart keeps the old environment) |
 
 ## Project layout
 
 ```
 src/gmail_mcp/   config, logging_setup, auth, auth_cli, gmail_client, models, parsing,
-                 security, server, tools, errors, __main__
+                 security, signin, server, tools, errors, __main__
 tests/           unit + MCP-level + HTTP-level tests (Gmail API mocked)
 scripts/         start|stop|restart|rebuild|auth|logs|status (.sh canonical, .ps1 wrappers)
-docs/            PLAN.md, SPEC.md, reports/
+docs/            PLAN.md, SPEC.md, reauth/ (re-auth plan + spec), reports/
 ```
 
 ## Out of scope

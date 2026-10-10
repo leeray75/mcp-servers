@@ -111,3 +111,18 @@ def test_secrets_not_in_repr(settings: Settings) -> None:
     text = repr(settings)
     assert FAKE_CLIENT_SECRET not in text
     assert FAKE_AUTH_TOKEN not in text
+
+
+def test_host_port_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_required(monkeypatch)
+    assert load_settings().host_port == 8765
+    monkeypatch.setenv("HOST_PORT", "9001")
+    assert load_settings().host_port == 9001
+
+
+@pytest.mark.parametrize("value", ["0", "65536", "abc"])
+def test_host_port_out_of_range_is_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    _set_required(monkeypatch)
+    monkeypatch.setenv("HOST_PORT", value)
+    with pytest.raises(ConfigError, match="HOST_PORT"):
+        load_settings()

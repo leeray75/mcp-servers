@@ -21,6 +21,8 @@ x-app-env: &app-env
   HOST: "0.0.0.0"
   PORT: "8000"
   TOKEN_PATH: /data/token.json
+  # Host-side port the browser uses (builds the sign-in link and OAuth redirect URI).
+  HOST_PORT: "${HOST_PORT:-8765}"
 
 services:
   gmail-mcp:

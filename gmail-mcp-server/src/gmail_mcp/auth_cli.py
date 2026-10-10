@@ -16,7 +16,8 @@ from gmail_mcp.config import ConfigError, Settings, load_settings
 
 REDIRECT_PORT: Final = 8400
 _PROMPT: Final = (
-    "\nOpen this URL in a browser on this computer and approve access:\n\n{url}\n\n"
+    "\nscripts/auth.sh opens this URL in your browser automatically; if it does not, open it "
+    "yourself on this computer and approve access:\n\n{url}\n\n"
     f"Waiting for Google to redirect to http://127.0.0.1:{REDIRECT_PORT}/ ...\n"
 )
 _SUCCESS: Final = "Sign-in complete. You can close this tab and return to the terminal."

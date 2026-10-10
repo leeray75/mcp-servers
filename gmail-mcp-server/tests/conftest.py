@@ -28,6 +28,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOKEN_PATH",
         "HOST",
         "PORT",
+        "HOST_PORT",
         "LOG_LEVEL",
         "MAX_RESULTS_CAP",
         "MAX_BODY_CHARS",
@@ -100,6 +101,10 @@ class FakeGmail:
         self.drafts: dict[str, dict[str, Any]] = {}
         self.created: list[tuple[str, str | None]] = []
         self.calls: list[tuple[Any, ...]] = []
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.resets += 1
 
     async def list_threads(self, query: str, max_results: int, page_token: str | None) -> Any:
         self.calls.append(("list_threads", query, max_results, page_token))

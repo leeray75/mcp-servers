@@ -12,6 +12,8 @@ from typing import Annotated, Final
 from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from gmail_mcp.errors import DEFAULT_HOST_PORT
+
 SCOPE_READONLY: Final = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPE_COMPOSE: Final = "https://www.googleapis.com/auth/gmail.compose"
 ALLOWED_SCOPES: Final[frozenset[str]] = frozenset({SCOPE_READONLY, SCOPE_COMPOSE})
@@ -53,6 +55,8 @@ class Settings(BaseSettings):
     token_path: str = "/data/token.json"  # noqa: S105 - a file path, not a secret
     host: str = "0.0.0.0"  # noqa: S104 - container bind; compose restricts host exposure
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
+    # Port the user's browser reaches the server on (the published host port).
+    host_port: Annotated[int, Field(ge=1, le=65535)] = DEFAULT_HOST_PORT
     log_level: str = "INFO"
     max_results_cap: Annotated[int, Field(ge=1, le=500)] = 50
     max_body_chars: Annotated[int, Field(ge=100, le=1_000_000)] = 20_000

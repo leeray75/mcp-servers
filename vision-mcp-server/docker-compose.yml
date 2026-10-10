@@ -1,0 +1,58 @@
+# Vision MCP server. Start with scripts/start.sh (or scripts/start.ps1 on Windows).
+#
+# Security posture: the published port is bound to host loopback ONLY, the root
+# filesystem is read-only, all Linux capabilities are dropped, the container runs as
+# UID 10001, and the images folder is mounted read-only. Do not change the port
+# mapping to 0.0.0.0, and keep the mount narrow (see README).
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  pids_limit: 128
+  mem_limit: 768m
+  cpus: 1.0
+
+services:
+  vision-mcp:
+    <<: *hardening
+    image: vision-mcp-server:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vision-mcp
+    env_file: .env
+    environment:
+      # Fixed inside the container; compose maps the host side via HOST_PORT.
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      IMAGES_DIR: /images
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8766}:8000"
+    volumes:
+      # The only host files the server can see. Read-only.
+      - type: bind
+        source: ${HOST_IMAGES_DIR:?set HOST_IMAGES_DIR in .env}
+        target: /images
+        read_only: true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 2s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

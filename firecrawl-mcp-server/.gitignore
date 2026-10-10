@@ -1,0 +1,9 @@
+# Secrets and runtime state - NEVER commit
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+coverage/
+npm-debug.log*

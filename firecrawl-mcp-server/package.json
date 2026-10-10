@@ -1,0 +1,17 @@
+{
+  "name": "firecrawl-mcp-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Persistent Streamable HTTP wrapper (bearer-token gateway) around the pinned firecrawl-mcp package",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "check": "node --check src/config.mjs && node --check src/redact.mjs && node --check src/gateway.mjs && node --check src/api-filter.mjs && node --check src/main.mjs",
+    "test": "node --test --experimental-test-coverage \"--test-coverage-include=src/**\" \"tests/*.test.mjs\"",
+    "audit": "npm audit --omit=dev"
+  },
+  "dependencies": {
+    "firecrawl-mcp": "3.27.3"
+  }
+}

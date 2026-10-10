@@ -100,6 +100,7 @@ def test_gmail_client_exposes_no_mutating_call_besides_create_draft() -> None:
         "list_drafts",
         "get_draft",
         "create_draft",
+        "reset",
     }
 
 

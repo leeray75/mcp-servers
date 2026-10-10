@@ -26,7 +26,7 @@ if [ "${state}" = "running" ]; then
   if docker exec "${CONTAINER}" test -f /data/token.json; then
     printf 'google    : token file present (sign-in done)\n'
   else
-    printf 'google    : no token file (run scripts/auth.sh)\n'
+    printf 'google    : no token file (open http://127.0.0.1:%s/auth or run scripts/auth.sh)\n' "$(host_port)"
   fi
 elif docker image inspect "${IMAGE}" >/dev/null 2>&1 && [ -f "${ENV_FILE}" ]; then
   if compose run --rm --no-deps -T --entrypoint test "${SERVICE}" -f /data/token.json >/dev/null 2>&1; then

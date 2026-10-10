@@ -176,3 +176,41 @@ Add it to Goose (~/.config/goose/config.yaml, extensions section):
 (Your token is not printed here. See README for the exact Goose format.)
 EOF
 }
+
+# Open URL in the user's browser. Tries wslview, explorer.exe (WSL), xdg-open, then prints it.
+# The URL is always a single argument: no eval, and no `cmd.exe /c start` (it breaks on `&`).
+# An opener failing never aborts the caller; we fall through to the next one or print.
+open_url() {
+  local url="$1"
+  if command -v wslview >/dev/null 2>&1 && wslview "${url}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v explorer.exe >/dev/null 2>&1; then
+    # explorer.exe exits 1 even when it opened the URL, so its status is ignored.
+    explorer.exe "${url}" >/dev/null 2>&1 || true
+    return 0
+  fi
+  if command -v xdg-open >/dev/null 2>&1 && xdg-open "${url}" >/dev/null 2>&1; then
+    return 0
+  fi
+  printf 'Open this URL in your browser: %s\n' "${url}"
+}
+
+# True if HEAD /auth answers 200, i.e. the running image has the sign-in route.
+# Containers built before the feature answer 401/404. Without curl the probe is skipped.
+auth_route_available() {
+  command -v curl >/dev/null 2>&1 || return 0
+  [ "$(curl -s -I -o /dev/null -w '%{http_code}' --max-time 3 \
+    "http://127.0.0.1:$(host_port)/auth" 2>/dev/null || true)" = "200" ]
+}
+
+# True if the gmail-mcp container is running and /healthz on the published port answers 200.
+server_running() {
+  [ "$(container_state)" = "running" ] || return 1
+  if command -v curl >/dev/null 2>&1; then
+    [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+      "http://127.0.0.1:$(host_port)/healthz" 2>/dev/null || true)" = "200" ]
+  else
+    [ "$(container_health)" = "healthy" ]
+  fi
+}

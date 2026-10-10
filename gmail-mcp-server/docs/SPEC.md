@@ -22,10 +22,11 @@ gmail-mcp-server/
 │   ├── models.py            # pydantic models for tool inputs/outputs
 │   ├── security.py          # bearer-token ASGI middleware, constant-time compare
 │   ├── server.py            # FastMCP app, tool registration, health route
+│   ├── signin.py            # server-hosted sign-in: GET /auth, GET /oauth2callback (§4.4)
 │   └── tools.py             # tool implementations (pure functions over gmail_client)
 ├── tests/
 ├── scripts/                 # start|stop|restart|rebuild|auth|logs|status (.sh + .ps1)
-├── docs/                    # PLAN.md, SPEC.md, reports/
+├── docs/                    # PLAN.md, SPEC.md, reauth/ (re-auth plan + spec), reports/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── pyproject.toml
@@ -53,6 +54,7 @@ startup with a clear message that never echoes secret values.
 | `TOKEN_PATH` | no | `/data/token.json` | Where the refresh token lives (mounted volume) |
 | `HOST` | no | `0.0.0.0` | Bind inside container (host exposure is restricted by compose, see §7) |
 | `PORT` | no | `8000` | Container port |
+| `HOST_PORT` | no | `8765` | Published host port the browser uses; builds the OAuth redirect URI and the sign-in link in auth errors (1-65535) |
 | `LOG_LEVEL` | no | `INFO` | |
 | `MAX_RESULTS_CAP` | no | `50` | Hard ceiling for any list tool |
 | `MAX_BODY_CHARS` | no | `20000` | Truncation limit for returned message bodies |
@@ -67,8 +69,10 @@ startup with a clear message that never echoes secret values.
 - Comparison MUST use `hmac.compare_digest`.
 - Missing/invalid → HTTP 401 with no detail about which part failed; log a
   redacted warning (never the presented token).
-- `GET /healthz` is the only unauthenticated route; it returns `{"status":"ok"}`
-  and, separately, MUST NOT reveal whether Google credentials exist.
+- Only `GET`/`HEAD` on the exact paths `/healthz`, `/auth` and `/oauth2callback` are
+  unauthenticated (no prefix matching). `/healthz` returns `{"status":"ok"}` and MUST NOT
+  reveal whether Google credentials exist. `/auth` and `/oauth2callback` are the server-hosted
+  sign-in (§4.4); the Host/Origin guard still runs first for every route.
 - Origin/Host validation: the server MUST reject requests whose `Host` header is
   not `127.0.0.1:<port>`, `localhost:<port>` (DNS-rebinding defense), per MCP
   Streamable HTTP guidance.
@@ -77,8 +81,9 @@ startup with a clear message that never echoes secret values.
 - Uses the stored refresh token with the Desktop OAuth client; access tokens are
   refreshed automatically and held in memory only.
 - If no token file exists or refresh fails with `invalid_grant`, tools MUST return
-  a clear, actionable MCP tool error ("Run scripts/auth.sh to sign in again") —
-  the process MUST NOT crash or open a browser.
+  a clear, actionable MCP tool error containing the link `http://127.0.0.1:<HOST_PORT>/auth` and the script
+  fallback; the process MUST NOT crash or open a browser. After a successful sign-in the cached Gmail
+  service is reset (`GmailClient.reset()`), so no restart is needed.
 - Token file MUST be written atomically with mode `0600`. Never logged.
 - Requested scopes MUST be validated against the allowed set at startup.
 
@@ -93,6 +98,35 @@ startup with a clear message that never echoes secret values.
 - On success, writes the token file to the mounted data volume and prints only
   the granted scopes (never the token).
 - The data volume (`./data/`) is git-ignored.
+- `scripts/auth.sh` MUST try the running server first (§4.4) and otherwise run this flow,
+  opening the printed Google URL in the host browser (`wslview`, `explorer.exe`, `xdg-open`,
+  else print). `--no-browser` only prints. The CLI itself never opens a browser.
+
+### 4.4 Server-hosted sign-in (`signin.py`)
+- `GET /auth`: `google_auth_oauthlib` `Flow` with the Desktop client, redirect URI
+  `http://127.0.0.1:<HOST_PORT>/oauth2callback`, PKCE S256, `access_type=offline`,
+  `prompt=consent`, random `state` (`secrets.token_urlsafe(32)`); responds 302 to Google.
+- Pending attempts (state to code verifier) live only in memory per app instance, expire after
+  10 minutes and are capped at 8 (oldest evicted). `state` is single use and consumed on
+  every callback outcome.
+- `GET /oauth2callback`: denied, unknown/expired/reused state or missing code give HTTP 400;
+  the code exchange runs off the event loop (`fetch_token(code=...)`, no insecure-transport or
+  relaxed-scope env switches); no refresh token or missing scopes give HTTP 400 and nothing is
+  written; success writes the token atomically (serialised by a lock), resets the Gmail
+  client and returns 200; unexpected errors give 500 and log only the exception class.
+- All responses are static script-free HTML reflecting no request data, with
+  `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`
+  and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`. Non-GET gives 405.
+- Logging: one INFO event per outcome (`started`, `succeeded`, `denied`, `bad_state`,
+  `scope_missing`, `no_refresh_token`, `failed`); the redaction filter also scrubs Google
+  authorization codes.
+- Residual risk: any local process or visited web page can start a sign-in, but nothing is
+  stored unless the user approves Google's consent screen. `GET /auth` is refused (403) when
+  `Sec-Fetch-Site` is present and not `none`/`same-origin`, unless it is a user-activated
+  top-level navigation (`Sec-Fetch-User: ?1`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest`
+  `document` or absent); `HEAD /auth` has no side effect
+  (200, headers only). Flooding `/auth` from a non-browser local process can still evict a
+  pending attempt.
 
 ## 5. MCP tools
 
@@ -162,7 +196,7 @@ Docker Engine (not Docker Desktop).
 | `stop` | `docker compose down` (keeps `data/`) |
 | `restart` | `docker compose restart`, wait for healthy |
 | `rebuild` | `docker compose build --no-cache` then recreate (`up -d --force-recreate`), wait for healthy; `--keep-cache` flag optional |
-| `auth` | Run the one-time sign-in container (§4.3); refuse if `GOOGLE_CLIENT_*` unset |
+| `auth [--no-browser]` | If the server is running and healthy: open `/auth` (§4.4) and wait (2 s poll, 5 min) for `data/token.json` to change. Otherwise run the one-time sign-in container (§4.3), opening its Google URL automatically. Refuse if `GOOGLE_CLIENT_*` unset |
 | `logs` | Follow logs (`-n`, `--no-follow` options) |
 | `status` | Container state, health, whether a token file exists (never its contents) |
 

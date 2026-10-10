@@ -20,6 +20,7 @@ _PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"GOCSPX-[A-Za-z0-9_-]+"),  # Google OAuth client secrets
     re.compile(r"ya29\.[A-Za-z0-9._-]+"),  # Google OAuth access tokens
     re.compile(r"\b1//[A-Za-z0-9._-]{20,}"),  # Google OAuth refresh tokens
+    re.compile(r"(?<![A-Za-z0-9])4/0[A-Za-z0-9_-]{10,}"),  # Google OAuth authorization codes
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),  # Authorization header values
 )
 

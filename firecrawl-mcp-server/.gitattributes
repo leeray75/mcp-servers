@@ -1,0 +1,4 @@
+# Default to LF everywhere (scripts run in WSL/Linux; Makefile and YAML break on CRLF).
+* text=auto eol=lf
+# PowerShell scripts are for Windows.
+*.ps1 text eol=crlf

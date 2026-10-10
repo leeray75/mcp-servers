@@ -19,6 +19,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 logger = logging.getLogger(__name__)
 
 HEALTH_PATH: Final = "/healthz"
+AUTH_PATH: Final = "/auth"
+CALLBACK_PATH: Final = "/oauth2callback"
+# Paths (GET/HEAD only) reachable without a bearer token. No prefix matching.
+_UNAUTHENTICATED_PATHS: Final[frozenset[str]] = frozenset({HEALTH_PATH, AUTH_PATH, CALLBACK_PATH})
 LOOPBACK_HOSTNAMES: Final[frozenset[str]] = frozenset({"127.0.0.1", "localhost"})
 _BEARER_PREFIX: Final = "bearer "
 
@@ -71,7 +75,11 @@ class HostGuardMiddleware:
 
 
 class BearerAuthMiddleware:
-    """Require ``Authorization: Bearer <token>`` on every route except ``GET /healthz``."""
+    """Require ``Authorization: Bearer <token>`` except on the exempt GET/HEAD paths.
+
+    Exempt (exact match): ``/healthz`` and the two sign-in routes, since a browser
+    cannot send the header. Everything else, including ``/mcp``, needs the token.
+    """
 
     def __init__(self, app: ASGIApp, token: str) -> None:
         self.app = app
@@ -95,7 +103,7 @@ class BearerAuthMiddleware:
         if kind != "http":
             await send({"type": "websocket.close", "code": 1008})
             return
-        if scope["path"] == HEALTH_PATH and scope["method"] in {"GET", "HEAD"}:
+        if scope["path"] in _UNAUTHENTICATED_PATHS and scope["method"] in {"GET", "HEAD"}:
             await self.app(scope, receive, send)
             return
         if not self._authorised(scope):

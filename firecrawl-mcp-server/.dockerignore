@@ -1,0 +1,25 @@
+# Secrets and runtime state
+.env
+.env.*
+*.token.json
+
+# VCS and editor
+.git/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+
+# Node
+node_modules/
+coverage/
+npm-debug.log*
+
+# Not needed in the image
+tests/
+docs/
+scripts/
+*.md
+Makefile
+docker-compose.yml
+Dockerfile

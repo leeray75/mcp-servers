@@ -1,0 +1,62 @@
+# Firecrawl MCP server. Start with scripts/start.sh (or scripts/start.ps1 on Windows).
+#
+# Security posture: the published port is bound to host loopback ONLY, the root
+# filesystem is read-only, all Linux capabilities are dropped, and the container runs as
+# UID 10001. It talks only to the self-hosted Firecrawl API over the firecrawl_backend
+# network and (for scraping) whatever that API fetches. It mounts no host folders.
+# Do not change the port mapping to 0.0.0.0.
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1.0
+
+services:
+  firecrawl-mcp:
+    <<: *hardening
+    image: firecrawl-mcp-server:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: firecrawl-mcp
+    env_file: .env
+    environment:
+      # Fixed inside the container; compose maps the host side via HOST_PORT.
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      PUBLIC_PORT: "${HOST_PORT:-8768}"
+    ports:
+      # Loopback only. Never publish on 0.0.0.0 (the bearer token travels in clear text).
+      - "127.0.0.1:${HOST_PORT:-8768}:8000"
+    networks:
+      - firecrawl_backend
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8000/healthz',{signal:AbortSignal.timeout(3000)}).then(r=>process.exit(r.status===200?0:1),()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 2s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  # Owned by the self-hosted Firecrawl compose project; joining it makes http://api:3002 resolve.
+  # scripts/start.sh fails with a clear message if it does not exist (Firecrawl stack not running).
+  firecrawl_backend:
+    external: true

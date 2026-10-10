@@ -79,6 +79,11 @@ class GmailClient:
         self._service: Any = None
         self._lock = threading.Lock()
 
+    def reset(self) -> None:
+        """Drop the cached service so the next call rebuilds it from the token file."""
+        with self._lock:
+            self._service = None
+
     async def _run(self, operation: Callable[[Any], _T]) -> _T:
         return await asyncio.to_thread(self._execute, operation)
 
