@@ -1,0 +1,10 @@
+# Safety net for all servers (each subproject also has its own .gitignore)
+.env
+.env.*
+!.env.example
+node_modules/
+__pycache__/
+.venv/
+venv/
+.DS_Store
+Thumbs.db
