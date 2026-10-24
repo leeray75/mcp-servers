@@ -306,6 +306,123 @@ class LeaguesResult(_Model):
     count: int
 
 
+MatchKind = Literal["id", "exact", "single", "fuzzy"]
+SeasonKind = Literal["regular", "post"]
+
+
+class PlayerRef(_Model):
+    """A player as ESPN names him. ``match`` says how a lookup matched (absent in plain lists)."""
+
+    id: str
+    name: str | None = None
+    team: str | None = None
+    position: str | None = None
+    league: str
+    match: MatchKind | None = None
+
+
+class PlayerSearchResult(_Model):
+    league: str
+    query: str
+    players: list[PlayerRef]
+    count: int
+    note: str | None = None
+    meta: Meta
+
+
+class ColumnInfo(_Model):
+    """One game-log column: its structured key, text label and group heading."""
+
+    key: str
+    label: str
+    group: str | None = None
+    season_to_date: bool | None = None  # per-game cell is season-to-date (hidden in text)
+
+
+class GameLogRow(_Model):
+    date: str | None = None  # local calendar date (YYYY-MM-DD)
+    week: int | None = None
+    round: str | None = None  # ESPN event note for playoff games
+    home_away: Literal["home", "away"] | None = None
+    opponent: str | None = None
+    result: str | None = None  # W | L | T, from the player's team's point of view
+    score: str | None = None  # player's team first, e.g. "27-34"
+    stats: dict[str, str]
+
+
+class SeasonLog(_Model):
+    year: int
+    season_type: SeasonKind
+    label: str  # ESPN block name, e.g. "2025 Regular Season"
+    game_count: int  # every game in the block, including any omitted rows
+    games: list[GameLogRow]  # the rows listed (oldest rows may be omitted for the size budget)
+    totals: dict[str, str]  # computed from every game in the block
+    computed: bool = True
+    games_omitted: int | None = None  # oldest rows not listed (R16 structured budget)
+
+
+class CareerLog(_Model):
+    season_type: SeasonKind
+    seasons: list[int]
+    game_count: int
+    totals: dict[str, str]
+    computed: bool = True
+
+
+class PlayerGameLogResult(_Model):
+    league: str
+    resolved: bool
+    player: PlayerRef | None = None
+    candidates: list[PlayerRef] | None = None
+    season: str
+    season_type: str
+    columns: list[ColumnInfo] | None = None
+    seasons: list[SeasonLog] | None = None
+    career: list[CareerLog] | None = None
+    game_count: int = 0
+    truncated: bool | None = None
+    note: str | None = None
+    meta: Meta
+
+
+class PlayerStatColumn(_Model):
+    name: str
+    label: str
+
+
+class PlayerStatRow(_Model):
+    season: int
+    season_label: str
+    team: str | None = None
+    position: str | None = None
+    stats: dict[str, str]
+
+
+class PlayerStatCategory(_Model):
+    name: str
+    label: str
+    columns: list[PlayerStatColumn]
+    rows: list[PlayerStatRow]
+    career: dict[str, str] | None = None  # ESPN's own career totals row, unmodified
+
+
+class PlayerStatBlock(_Model):
+    season_type: SeasonKind
+    label: str
+    categories: list[PlayerStatCategory]
+
+
+class PlayerStatsResult(_Model):
+    league: str
+    resolved: bool
+    player: PlayerRef | None = None
+    candidates: list[PlayerRef] | None = None
+    season_type: str
+    blocks: list[PlayerStatBlock] | None = None
+    note: str | None = None
+    meta: Meta
+
+
 def prune(value: Any) -> Any:
     """Drop empty strings and empty dicts recursively (empty lists are kept: they carry meaning)."""
     if isinstance(value, dict):

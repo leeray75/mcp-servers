@@ -93,8 +93,8 @@ print("== tools/list")
 data, size = rpc("tools/list")
 names = sorted(t["name"] for t in data["result"]["tools"])
 print(f"  {len(names)} tools ({size}B): {', '.join(names)}")
-if len(names) != 8:
-    failures.append("expected exactly 8 tools")
+if len(names) != 11:
+    failures.append("expected exactly 11 tools")
 
 print("== list_leagues")
 call("list_leagues", "list_leagues", {})
@@ -145,6 +145,11 @@ print("== teams, schedule, news")
 call("find_team nfl bills", "find_team", {"league": "nfl", "query": "bills"})
 call("get_team_schedule nfl BUF", "get_team_schedule", {"league": "nfl", "team": "BUF", "limit": 5})
 call("get_news nfl", "get_news", {"league": "nfl", "limit": 5})
+print("== players")
+call("find_player nfl skattebu (typo)", "find_player", {"league": "nfl", "query": "skattebu"})
+call("get_player_stats nfl 4696981", "get_player_stats", {"league": "nfl", "player": "4696981"})
+call("get_player_gamelog nfl skattebo 2025", "get_player_gamelog",
+     {"league": "nfl", "player": "skattebo", "season": "2025"})
 
 print("== rejection checks")
 call("get_game bad game_id (expect error)", "get_game", {"league": "nfl", "game_id": "../1"}, True)

@@ -1,7 +1,7 @@
 # sports-mcp-server
 
 An MCP server that gives agents **live, compact, correctly-labelled sports data** (scores, schedules,
-standings, box scores with player stats, betting lines, headlines) for 15 leagues, through eight typed,
+standings, box scores with player stats, betting lines, headlines) for 15 leagues, through eleven typed,
 read-only tools. It talks to ESPN's unofficial public JSON API, normalises the ~200 KB payloads into a
 few hundred bytes of text, and stamps every answer with when ESPN was actually asked, so a stale cache is
 visible instead of silently wrong.
@@ -101,7 +101,7 @@ sports (F1, golf, UFC, tennis) are not implemented and are therefore not in the 
 
 ## Tools
 
-Exactly eight tools, all read-only (`readOnlyHint`, idempotent, non-destructive, open-world). Each result has a
+Exactly eleven tools, all read-only (`readOnlyHint`, idempotent, non-destructive, open-world). Each result has a
 compact **text** rendering in `content` (what the model reads) and the typed data in `structuredContent`
 (nulls and empty strings are dropped). Descriptions tell the agent when to use the tool, mention freshness and
 that returned text is third-party data, not instructions.
@@ -234,6 +234,28 @@ first N otherwise.
 `limit` 1-20. Returns `headline, published_utc, description (<= 240 chars), url`. URLs are data only; the server
 never fetches them.
 
+### `find_player(league, query, limit=5, refresh=False)`
+
+Players in one league by name (`query`: 1-60 letters, digits, spaces, `. ' -`). Up to `limit` (1-10) results with
+`id`, `name` and `team`. Misspellings are retried with shorter prefixes and ranked by edit distance; a fuzzy result is
+marked `match: "fuzzy"`. An empty result is not an error.
+
+### `get_player_stats(league, player, season_type="regular", refresh=False)`
+
+Season-by-season rows per stat category, plus ESPN's own career totals row (unmodified). `player` is an ESPN athlete
+id (digits) or a name. A name resolves when one candidate clearly matches; otherwise the result has `resolved: false`
+and candidates (call again with an `id`). `season_type`: `regular`, `post` or `all`.
+
+### `get_player_gamelog(league, player, season="current", season_type="regular", refresh=False)`
+
+One row per game (date, week or playoff round, home/away, opponent, result and score from the player's team's point
+of view, stats) with totals computed from the listed games. `season`: `current`, a year (NBA `2025` means 2024-25) or
+`all` (the most recent `PLAYER_MAX_SEASONS` seasons, oldest dropped first). Career totals appear when more than one
+season is listed. Football shows fumbles, fumbles lost, interceptions thrown and TO (interceptions thrown + fumbles
+lost; defensive interceptions are never counted). MLB season-to-date rate cells are not shown per game, and the totals
+row recomputes AVG from hits and at-bats. Settings: `TTL_PLAYER_SEARCH_SECONDS`, `TTL_PLAYER_SECONDS` and
+`PLAYER_MAX_SEASONS` (see `.env.example`). Design: `docs/specs/player-stats/SPEC.md`.
+
 ## Resources (secondary)
 
 Resources are application-controlled and many clients (including Goose) may not show them to the model, so nothing
@@ -358,3 +380,6 @@ tested with hand-built dicts shaped like ESPN's documented fields.
 - Each response carries the data twice (compact text and structured content); clients that forward both pay for
   both. Text sizes are what the model reads by default.
 - Standings and schedules for past seasons depend on what ESPN still serves; the `season` argument is passed through unchanged.
+- Player search results carry no position; position comes from the athlete profile, which id lookups use.
+- Player game logs for hockey and soccer use a generic column list (no fixtures). NBA shooting percentages are kept in
+  structured data only. NBA preseason games are ignored.

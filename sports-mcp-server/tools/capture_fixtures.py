@@ -20,6 +20,8 @@ from typing import Any
 BASE = "https://site.api.espn.com"
 SITE = "/apis/site/v2/sports"
 V2 = "/apis/v2/sports"
+PLAYERS = "/apis/common/v3/sports"
+SEARCH = "/apis/common/v3/search"
 OUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
 UA = "Mozilla/5.0 sports-mcp-fixture-capture"
 
@@ -103,6 +105,33 @@ PLAN: list[tuple[str, str]] = [
     ("epl_schedule_ars", f"{SITE}/soccer/eng.1/teams/359/schedule"),
     ("nfl_news", f"{SITE}/football/nfl/news?limit=5"),
     ("epl_news", f"{SITE}/soccer/eng.1/news?limit=5"),
+    # Player endpoints (spec: docs/specs/player-stats). Names are prefixed "player_".
+    ("player_search_skattebo", f"{SEARCH}?query=skattebo&limit=5&type=player"),
+    ("player_search_skattebu", f"{SEARCH}?query=skattebu&limit=5&type=player"),
+    ("player_search_cam_skattebu", f"{SEARCH}?query=Cam+Skattebu&limit=5&type=player"),
+    ("player_search_cam_skatteb", f"{SEARCH}?query=Cam+Skatteb&limit=5&type=player"),
+    ("player_search_skatteb", f"{SEARCH}?query=skatteb&limit=5&type=player"),
+    ("player_search_smith", f"{SEARCH}?query=smith&limit=10&type=player"),
+    ("player_gl_nfl_skattebo_2025", f"{PLAYERS}/football/nfl/athletes/4696981/gamelog?season=2025"),
+    ("player_gl_nfl_skattebo_2026", f"{PLAYERS}/football/nfl/athletes/4696981/gamelog"),
+    ("player_gl_nfl_skattebo_2015", f"{PLAYERS}/football/nfl/athletes/4696981/gamelog?season=2015"),
+    ("player_stats_nfl_skattebo", f"{PLAYERS}/football/nfl/athletes/4696981/stats"),
+    ("player_gl_nfl_darnold_2025", f"{PLAYERS}/football/nfl/athletes/3912547/gamelog?season=2025"),
+    ("player_stats_nfl_darnold", f"{PLAYERS}/football/nfl/athletes/3912547/stats"),
+    (
+        "player_stats_nfl_darnold_post",
+        f"{PLAYERS}/football/nfl/athletes/3912547/stats?seasontype=3",
+    ),
+    ("player_gl_nfl_maye_2025", f"{PLAYERS}/football/nfl/athletes/4431452/gamelog?season=2025"),
+    ("player_gl_nfl_byard_2025", f"{PLAYERS}/football/nfl/athletes/2574056/gamelog?season=2025"),
+    ("player_gl_nfl_adams_2025", f"{PLAYERS}/football/nfl/athletes/16800/gamelog?season=2025"),
+    ("player_stats_nfl_adams", f"{PLAYERS}/football/nfl/athletes/16800/stats"),
+    ("player_gl_nba_lebron_2025", f"{PLAYERS}/basketball/nba/athletes/1966/gamelog?season=2025"),
+    ("player_stats_nba_lebron", f"{PLAYERS}/basketball/nba/athletes/1966/stats"),
+    ("player_gl_mlb_judge_2025", f"{PLAYERS}/baseball/mlb/athletes/33192/gamelog?season=2025"),
+    ("player_profile_nfl_skattebo", f"{PLAYERS}/football/nfl/athletes/4696981"),
+    ("player_profile_nba_lebron", f"{PLAYERS}/basketball/nba/athletes/1966"),
+    ("player_stats_mlb_ohtani", f"{PLAYERS}/baseball/mlb/athletes/39832/stats"),
 ]
 
 

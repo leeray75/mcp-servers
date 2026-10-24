@@ -3,6 +3,9 @@
 Usage (WSL): python tools/try_live.py scoreboard nfl [date]
              python tools/try_live.py game nfl 401872965 [summary|performers|boxscore]
              python tools/try_live.py odds|standings|team|schedule|news ...
+             python tools/try_live.py find-player nfl skattebo
+             python tools/try_live.py player-stats nfl 4696981
+             python tools/try_live.py gamelog nfl 4696981 2025 [regular|post|all]
 """
 
 from __future__ import annotations
@@ -38,6 +41,14 @@ async def main(argv: list[str]) -> None:
         out = await service.get_team_schedule(args[0], args[1])
     elif cmd == "news":
         out = await service.get_news(args[0])
+    elif cmd == "find-player":
+        out = await service.find_player(args[0], args[1])
+    elif cmd == "player-stats":
+        out = await service.get_player_stats(args[0], args[1])
+    elif cmd == "gamelog":
+        season = args[2] if len(args) > 2 else "current"
+        kind = args[3] if len(args) > 3 else "regular"
+        out = await service.get_player_gamelog(args[0], args[1], season, kind)
     else:
         raise SystemExit("unknown command")
     print(out.text)

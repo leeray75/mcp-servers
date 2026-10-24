@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     ttl_schedule_seconds: Annotated[int, Field(ge=0, le=86_400)] = 300
     ttl_schedule_live_seconds: Annotated[int, Field(ge=0, le=3600)] = 60
     ttl_news_seconds: Annotated[int, Field(ge=0, le=86_400)] = 300
+    ttl_player_search_seconds: Annotated[int, Field(ge=0, le=86_400)] = 3600
+    ttl_player_seconds: Annotated[int, Field(ge=0, le=86_400)] = 300
+    # Most recent seasons fetched for get_player_gamelog(season="all") (older ones are omitted).
+    player_max_seasons: Annotated[int, Field(ge=1, le=25)] = 10
     cache_max_entries: Annotated[int, Field(ge=8, le=10_000)] = 256
     # Approximate resident size of cached payloads (container limit is 512 MiB).
     cache_max_mb: Annotated[int, Field(ge=8, le=400)] = 96

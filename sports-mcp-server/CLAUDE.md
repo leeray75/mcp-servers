@@ -10,8 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A self-owned MCP server (Python 3.12, official `mcp` SDK) giving agents live, compact sports data from ESPN's
-unofficial public JSON API: exactly eight read-only tools (`list_leagues`, `get_scoreboard`, `get_game`, `get_odds`,
-`get_standings`, `find_team`, `get_team_schedule`, `get_news`) plus three read-only resources, for 15 team-sport
+unofficial public JSON API: exactly eleven read-only tools (`list_leagues`, `get_scoreboard`, `get_game`, `get_odds`,
+`get_standings`, `find_team`, `get_team_schedule`, `get_news`, `find_player`, `get_player_stats`,
+`get_player_gamelog`) plus three read-only resources, for 15 team-sport
 leagues. Streamable HTTP on 127.0.0.1:8767 behind a bearer token, run in Docker inside WSL2; `--stdio` also works.
 It mirrors the structure and security posture of the sibling `../vision-mcp-server` (which mirrors `../gmail-mcp-server`).
 `docs/SPEC.md` is the authoritative specification; `README.md` covers operation and configuration;
@@ -37,7 +38,7 @@ container and prints response sizes. `.env` holds the bearer token and is git-ig
 ## Architecture (`src/sports_mcp/`)
 
 - `__main__.py` entry (uvicorn / `--stdio`); `config.py` the only module that reads the environment (errors name fields, never values).
-- `server.py` builds the `MCPServer`, registers the eight tools, `/healthz` and the Starlette middleware. It deliberately has **no**
+- `server.py` builds the `MCPServer`, registers the eleven tools, `/healthz` and the Starlette middleware. It deliberately has **no**
   `from __future__ import annotations`: `Field(...)` constraints live in `Annotated` metadata the SDK reads for the JSON schema.
   Tools return `CallToolResult(content=[text], structured_content=data)`; the `_instrumented` wrapper maps `SportsMcpError` to
   `ToolError` and logs tool/league/duration/outcome/cache only.
@@ -52,7 +53,7 @@ container and prints response sizes. `.env` holds the bearer token and is git-ig
 
 ## Invariants to preserve
 
-- The tool set is exactly the eight above (a test asserts it); all read-only. No MCP prompts. Nothing is reachable only via a resource.
+- The tool set is exactly the eleven above (a test asserts it; amended by `docs/specs/player-stats`, A1); all read-only. No MCP prompts. Nothing is reachable only via a resource.
 - Only `espn_client.py` imports a network library (a test greps for it). No agent-supplied string becomes a URL or path segment
   without a strict pattern: league via the registry, game/team ids digits-only, dates parsed, team/group text a restricted character class.
   Every request host must equal the `ESPN_BASE_URL` host; redirects are never followed.

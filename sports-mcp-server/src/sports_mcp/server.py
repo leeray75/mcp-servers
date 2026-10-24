@@ -47,7 +47,8 @@ INSTRUCTIONS: Final = (
     "a day's games and their ids; get_game(game_id) gives scoring plays, team stats and player "
     "stats (detail=summary|performers|boxscore); get_odds gives betting lines (ESPN removes "
     "lines once a game starts); get_standings, find_team, get_team_schedule and get_news cover "
-    "the rest. Every result carries meta.as_of (when ESPN was queried) and meta.cache_age_seconds; "
+    "the rest; find_player, get_player_stats and get_player_gamelog cover players (by name or "
+    "ESPN id). Every result carries meta.as_of (when ESPN was queried) and meta.cache_age_seconds; "
     "pass refresh=true to bypass the short cache when you need the very latest. Dates are "
     "'today', 'yesterday', 'tomorrow' or YYYY-MM-DD in the server's time zone." + UNTRUSTED_NOTE
 )
@@ -103,6 +104,57 @@ _DESC_NEWS: Final = (
     "Latest headlines for a league (headline, time, short description, URL). URLs are "
     "references only; this server never opens them. Cached 5 minutes." + UNTRUSTED_NOTE
 )
+
+_DESC_FIND_PLAYER: Final = (
+    "Find players in one league by name (typos are tolerated). Returns up to 5 players with id, "
+    "name and team. Use the id with get_player_stats or get_player_gamelog. An empty result "
+    "means no player in that league; try another spelling." + UNTRUSTED_NOTE
+)
+_DESC_PLAYER_STATS: Final = (
+    "A player's stats season by season, grouped by stat category, with ESPN's own career totals "
+    "row (not recomputed). Pass a name or an athlete id; a clear single match is used, otherwise "
+    "candidates are listed (call again with the id). season_type: regular (default), post "
+    "(playoffs) or all. Use get_player_gamelog for game-by-game detail." + UNTRUSTED_NOTE
+)
+_DESC_GAMELOG: Final = (
+    "A player's game-by-game log for one season (or the most recent seasons with season=all) "
+    "with totals computed from the listed games: one line per game with date, opponent, result "
+    "and score (player's team first), and per-season and career totals. Football shows fumbles, "
+    "fumbles lost, interceptions thrown and turnovers (TO = INT thrown + fumbles lost). "
+    "season_type: regular (default), post or all (separate blocks). Pass a name or an athlete id."
+    + UNTRUSTED_NOTE
+)
+
+PlayerQueryArg = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=60,
+        description="Player name, e.g. 'Cam Skattebo'. Misspellings are tried again.",
+    ),
+]
+PlayerArg = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=60,
+        description="ESPN athlete id (digits, e.g. 4696981) or a player name, e.g. Cam Skattebo.",
+    ),
+]
+SeasonArg = Annotated[
+    str,
+    Field(
+        pattern=r"^(current|all|[0-9]{4})$",
+        description=(
+            "current (default), a year such as 2025 (NBA 2025 = 2024-25), or all (the most "
+            "recent seasons, capped)."
+        ),
+    ),
+]
+SeasonTypeArg = Annotated[
+    Literal["regular", "post", "all"],
+    Field(description="regular (default), post (playoffs) or all (both, shown separately)."),
+]
 
 SEASON_HELP: Final = (
     "Season year as ESPN labels it: for seasons spanning two years it is the END year "
@@ -208,7 +260,7 @@ class SportsServer(MCPServer):
 
 
 def create_server(settings: Settings, service: SportsService | None = None) -> MCPServer:
-    """Build the MCP server with exactly the eight sports tools and three resources."""
+    """Build the MCP server with exactly the eleven sports tools and three resources."""
     svc = service or SportsService(settings, EspnClient(settings))
     server = SportsServer(SERVER_NAME, instructions=INSTRUCTIONS, version=__version__)
 
@@ -339,6 +391,42 @@ def create_server(settings: Settings, service: SportsService | None = None) -> M
     ) -> ToolOutput:
         """Latest headlines."""
         return await svc.get_news(league, limit, refresh)
+
+    @server.tool(name="find_player", annotations=READ_ONLY, description=_DESC_FIND_PLAYER)
+    @_instrumented("find_player")
+    async def find_player(
+        league: LeagueArg,
+        query: PlayerQueryArg,
+        limit: Annotated[
+            int, Field(ge=1, le=10, description="Max players returned (default 5).")
+        ] = 5,
+        refresh: RefreshArg = False,
+    ) -> ToolOutput:
+        """Find players by name."""
+        return await svc.find_player(league, query, limit, refresh)
+
+    @server.tool(name="get_player_stats", annotations=READ_ONLY, description=_DESC_PLAYER_STATS)
+    @_instrumented("get_player_stats")
+    async def get_player_stats(
+        league: LeagueArg,
+        player: PlayerArg,
+        season_type: SeasonTypeArg = "regular",
+        refresh: RefreshArg = False,
+    ) -> ToolOutput:
+        """A player's season-by-season stats and ESPN's career totals."""
+        return await svc.get_player_stats(league, player, season_type, refresh)
+
+    @server.tool(name="get_player_gamelog", annotations=READ_ONLY, description=_DESC_GAMELOG)
+    @_instrumented("get_player_gamelog")
+    async def get_player_gamelog(
+        league: LeagueArg,
+        player: PlayerArg,
+        season: SeasonArg = "current",
+        season_type: SeasonTypeArg = "regular",
+        refresh: RefreshArg = False,
+    ) -> ToolOutput:
+        """A player's game-by-game log with computed totals."""
+        return await svc.get_player_gamelog(league, player, season, season_type, refresh)
 
     register_resources(server, svc)
     return server
