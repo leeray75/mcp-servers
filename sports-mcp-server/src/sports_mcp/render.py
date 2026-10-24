@@ -455,8 +455,23 @@ def render_leagues(result: LeaguesResult) -> str:
 
 PLAYER_FOOTNOTE: Final = (
     "Totals are 'computed from listed games', or 'computed from all N games' where a heading "
-    "says rows were omitted; '-' means missing (or season-to-date, not per game)."
+    "says rows were omitted; 'n/a' means missing or season-to-date, not per game."
 )
+_SEASON_TYPE_LABEL: Final = {
+    "regular": "regular season only",
+    "post": "postseason only",
+    "all": "regular season and postseason",
+}
+
+
+def _na(value: str | None) -> str:
+    """A missing cell reads ``n/a``: ``-`` is reserved for a real negative sign (R4)."""
+    return "n/a" if value in (None, "", "-") else value
+
+
+def _mm_dd(date: str | None) -> str:
+    """``10/18`` for a ``YYYY-MM-DD`` date, or ``""`` when there is none."""
+    return f"{date[5:7]}/{date[8:10]}" if date else ""
 
 
 def _table(columns: list[tuple[str, str]], rows: list[list[str]]) -> list[str]:
@@ -523,7 +538,7 @@ def _unresolved_block(
 
 
 def _stat_row_cells(stats: dict[str, str], names: list[str]) -> list[str]:
-    return [stats.get(name, "-") for name in names]
+    return [_na(stats.get(name)) for name in names]
 
 
 def render_player_stats(result: PlayerStatsResult, league: League, tz: ZoneInfo) -> str:
@@ -547,7 +562,7 @@ def _stat_block_lines(block: PlayerStatBlock) -> list[str]:
         names = [c.name for c in category.columns]
         columns = [("", "Season"), ("", "Team")] + [("", c.label) for c in category.columns]
         rows = [
-            [row.season_label, row.team or "-"] + _stat_row_cells(row.stats, names)
+            [row.season_label, _na(row.team)] + _stat_row_cells(row.stats, names)
             for row in category.rows
         ]
         if category.career is not None:
@@ -562,20 +577,19 @@ def _log_columns(result: PlayerGameLogResult) -> list[tuple[str, str]]:
     return keys + [(c.group or "", c.label) for c in result.columns or []]
 
 
+def _opponent_text(game: GameLogRow) -> str:
+    return f"{'vs ' if game.home_away == 'home' else '@'}{game.opponent or '?'}"
+
+
 def _game_cells(game: GameLogRow, result: PlayerGameLogResult) -> list[str]:
-    date = "-"
-    if game.date:
-        moment = game.date
-        date = f"{moment[5:7]}/{moment[8:10]}"
     week = str(game.week) if game.week is not None else _short_round(game.round)
-    opponent = f"{'vs ' if game.home_away == 'home' else '@'}{game.opponent or '?'}"
     result_text = f"{game.result} {game.score}" if game.result and game.score else game.result
-    cells = [week, date, opponent, result_text or "-"]
+    cells = [_na(week), _na(_mm_dd(game.date)), _opponent_text(game), _na(result_text)]
     for column in result.columns or []:
         if column.season_to_date:
-            cells.append("-")
+            cells.append("n/a")
         else:
-            cells.append(game.stats.get(column.key, "-"))
+            cells.append(_na(game.stats.get(column.key)))
     return cells
 
 
@@ -599,11 +613,18 @@ def _season_heading(season: SeasonLog) -> str:
     return f"{season.label} ({season.game_count} games; totals computed from listed games)"
 
 
-def _log_totals_cells(totals: dict[str, str], result: PlayerGameLogResult) -> list[str]:
+def _log_totals_cells(totals: dict[str, str | None], result: PlayerGameLogResult) -> list[str]:
     cells = ["", "Total", "", ""]
     for column in result.columns or []:
-        cells.append(totals.get(column.key, "-"))
+        cells.append(_na(totals.get(column.key)))
     return cells
+
+
+def _no_stats_item(game: GameLogRow) -> str:
+    """``Wk 6 vs NO (10/18)``: the same week, opponent and date the game row shows."""
+    label = f"Wk {game.week}" if game.week is not None else (_short_round(game.round) or "game")
+    when = _mm_dd(game.date)
+    return f"{label} {_opponent_text(game)}" + (f" ({when})" if when else "")
 
 
 def _season_lines(season: SeasonLog, result: PlayerGameLogResult) -> list[str]:
@@ -612,7 +633,56 @@ def _season_lines(season: SeasonLog, result: PlayerGameLogResult) -> list[str]:
     rows = [_log_totals_cells(season.totals, result)]
     rows.extend(_game_cells(g, result) for g in season.games)
     lines.extend(_table(_log_columns(result), rows))
+    flagged = [g for g in season.games if g.no_stats]
+    if flagged:  # R3: a fact about the data only; no reason is given or implied
+        items = "; ".join(_no_stats_item(g) for g in flagged)
+        lines.append(f"No recorded stats (played; ESPN gives no reason): {items}.")
     return lines
+
+
+def _years_text(years: list[int]) -> str:
+    """``season 2025``, ``seasons 2015, 2017`` or ``seasons 2015-2017``: a range only where
+    consecutive years are really all omitted (2015, 2017 never reads as 2016 too)."""
+    ordered = sorted(set(years))
+    runs: list[list[int]] = []
+    for year in ordered:
+        if runs and year == runs[-1][-1] + 1:
+            runs[-1].append(year)
+        else:
+            runs.append([year])
+    parts = [str(run[0]) if len(run) == 1 else f"{run[0]}-{run[-1]}" for run in runs]
+    noun = "season" if len(ordered) == 1 else "seasons"
+    return f"{noun} {', '.join(parts)}"
+
+
+def _completeness_line(result: PlayerGameLogResult, text_cut: bool) -> str:
+    """R2: exactly one line under the header, complete or PARTIAL with what is missing."""
+    comp = result.completeness
+    if comp is None:
+        raise ValueError("a resolved game log always carries completeness")
+    counts = ", ".join(f"{year}: {n}" for year, n in comp.by_season.items())
+    if comp.status == "complete":
+        listed = f"{comp.games} games" + (f" ({counts})" if counts else "")
+        label = _SEASON_TYPE_LABEL.get(result.season_type, result.season_type)
+        return f"Completeness: complete - {listed}, {label}, nothing omitted."
+    # After a text cut the count is what the data holds; the text shows fewer rows (not "listed").
+    head = "games in the data" if text_cut else "games listed"
+    listed = f"{comp.games} {head}" + (f" ({counts})" if counts else "")
+    omitted: list[str] = []
+    if comp.omitted_seasons:
+        omitted.append(_years_text(comp.omitted_seasons))
+    omitted.extend(f"{n} oldest rows of {year}" for year, n in comp.omitted_rows.items())
+    if text_cut:
+        omitted.append("newest rows cut by the text size cap")
+    # Advice must name a request that can actually return the rows (season=YYYY only helps
+    # for season=all, where each season is fetched on its own).
+    if result.season == "all":
+        advice = "call with season=YYYY to see them."
+    elif result.season_type == "all":
+        advice = "call with season_type=regular or post to see them."
+    else:
+        advice = "no narrower request returns them; the size budget applies."
+    return f"Completeness: PARTIAL - {listed}; omitted: {'; '.join(omitted)}; {advice}"
 
 
 def _career_lines(career: CareerLog, result: PlayerGameLogResult) -> list[str]:
@@ -627,14 +697,17 @@ def _career_lines(career: CareerLog, result: PlayerGameLogResult) -> list[str]:
     return [head, *_table(_log_columns(result), rows)]
 
 
-def render_player_gamelog(result: PlayerGameLogResult, league: League, tz: ZoneInfo) -> str:
+def render_player_gamelog(
+    result: PlayerGameLogResult, league: League, tz: ZoneInfo, *, text_cut: bool = False
+) -> str:
     if not result.resolved or result.player is None:
         return "\n".join(_unresolved_block(league, result.candidates, result.note))
     lines = [
         f"{_header(result.player, league)} | {result.season} | {result.game_count} games | "
-        f"{freshness(result.meta, tz)}"
+        f"{freshness(result.meta, tz)}",
+        _completeness_line(result, text_cut),  # R2: directly under the header, always present
     ]
-    if result.note:  # first, so the size cap can never cut the explanation (M1)
+    if result.note:  # before the seasons, so the size cap can never cut the explanation (M1)
         lines.append(result.note)
     for season in result.seasons or []:
         lines.extend(_season_lines(season, result))

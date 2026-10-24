@@ -112,17 +112,20 @@ _DESC_FIND_PLAYER: Final = (
 )
 _DESC_PLAYER_STATS: Final = (
     "A player's stats season by season, grouped by stat category, with ESPN's own career totals "
-    "row (not recomputed). Pass a name or an athlete id; a clear single match is used, otherwise "
-    "candidates are listed (call again with the id). season_type: regular (default), post "
-    "(playoffs) or all. Use get_player_gamelog for game-by-game detail." + UNTRUSTED_NOTE
+    "row (not recomputed). Pass a name or an athlete id; a player given by name works directly, "
+    "and a clear single match is used, otherwise candidates are listed (call again with the id). "
+    "season_type: regular (default), post (playoffs) or all. Use get_player_gamelog for "
+    "game-by-game detail." + UNTRUSTED_NOTE
 )
 _DESC_GAMELOG: Final = (
-    "A player's game-by-game log for one season (or the most recent seasons with season=all) "
-    "with totals computed from the listed games: one line per game with date, opponent, result "
-    "and score (player's team first), and per-season and career totals. Football shows fumbles, "
-    "fumbles lost, interceptions thrown and turnovers (TO = INT thrown + fumbles lost). "
-    "season_type: regular (default), post or all (separate blocks). Pass a name or an athlete id."
-    + UNTRUSTED_NOTE
+    "A player's game-by-game log with totals computed from the listed games: one line per game "
+    "with date, opponent, result and score (player's team first), and per-season and career "
+    "totals. season: current (default), a year such as 2025, or all for the player's whole "
+    "career (up to the server's PLAYER_MAX_SEASONS seasons); the result states explicitly if any "
+    "seasons or games were omitted. A player given by name works directly; find_player is only "
+    "needed to browse candidates. Football shows fumbles, fumbles lost, interceptions thrown and "
+    "turnovers (TO = INT thrown + fumbles lost). season_type: regular (default), post or all "
+    "(separate blocks). Pass a name or an athlete id." + UNTRUSTED_NOTE
 )
 
 PlayerQueryArg = Annotated[
@@ -146,8 +149,9 @@ SeasonArg = Annotated[
     Field(
         pattern=r"^(current|all|[0-9]{4})$",
         description=(
-            "current (default), a year such as 2025 (NBA 2025 = 2024-25), or all (the most "
-            "recent seasons, capped)."
+            "current (default), a year such as 2025 (NBA 2025 = 2024-25), or all (the player's "
+            "whole career, up to the server's PLAYER_MAX_SEASONS seasons; omissions are stated "
+            "in the result)."
         ),
     ),
 ]

@@ -115,11 +115,12 @@ async def test_mlb_gamelog_hides_season_to_date_cells_and_recomputes_avg(
     service: SportsService,
 ) -> None:
     out = await service.get_player_gamelog("mlb", "33192", season="2025")
-    header = next(line for line in out.text.splitlines() if line.startswith("Wk"))
+    # Wk is right-aligned; one game with no week shows n/a, which widens the column (R4)
+    header = next(line for line in out.text.splitlines() if line.lstrip().startswith("Wk"))
     assert "AVG" in header and "OBP" in header
     assert "Total" in out.text
     total_line = next(line for line in out.text.splitlines() if " Total " in line)
-    assert "-" in total_line  # OBP/SLG/OPS totals are not rebuilt from game rows
+    assert "n/a" in total_line  # OBP/SLG/OPS totals are not rebuilt from game rows
 
 
 async def test_one_mlb_season_is_truncated_to_its_budget(service: SportsService) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -143,16 +144,16 @@ def test_compute_totals_each_reducer() -> None:
         _row(a="1.5", d="0"),
     ]
     totals = ps.compute_totals(rows, specs)
-    assert totals == {"a": "3.5", "m": "9", "r": "0.5", "p": "17-36", "n2": "-"}
-    assert ps.compute_totals([_row()], specs)["a"] == "-"  # every input missing
-    assert ps.compute_totals([_row(n="2", d="0")], specs)["r"] == "-"  # zero denominator
+    assert totals == {"a": "3.5", "m": "9", "r": "0.5", "p": "17-36", "n2": None}
+    assert ps.compute_totals([_row()], specs)["a"] is None  # every input missing
+    assert ps.compute_totals([_row(n="2", d="0")], specs)["r"] is None  # zero denominator
 
 
 def test_compute_totals_ratio_for_rates_and_missing_inputs() -> None:
     spec = ps.Spec("AVG", "", None, "avg", "ratio", ratio=("hits", "atBats"), digits=3)
     rows = [_row(hits="2", atBats="5"), _row(hits="1", atBats="3")]
     assert ps.compute_totals(rows, (spec,))["avg"] == "0.375"
-    assert ps.compute_totals([_row(hits="1")], (spec,))["avg"] == "-"
+    assert ps.compute_totals([_row(hits="1")], (spec,))["avg"] is None
 
 
 def test_specs_for_generic_fallback_and_allow_lists() -> None:
@@ -215,7 +216,7 @@ def test_gamelog_skattebo_2025_matches_espn_and_spec() -> None:
     assert season.totals["rushing.rushingTouchdowns"] == "5"
     assert season.totals["rushing.yardsPerRushAttempt"] == "4.1"
     assert season.totals["rushing.longRushing"] == "24"
-    assert season.totals["passing.interceptions"] == "-"  # no passing category: INT is missing
+    assert season.totals["passing.interceptions"] is None  # no passing category: INT is missing
     assert season.totals["derived.TO"] == season.totals["fumbles.fumblesLost"]
 
 
@@ -258,7 +259,7 @@ def test_gamelog_totals_equal_arithmetic_sums_of_rows() -> None:
                     for n in (ps.to_number(g.stats.get(spec.key)) for g in season.games)
                     if n is not None
                 ]
-                expected = "-" if not numbers else str(int(sum(numbers)))
+                expected = None if not numbers else str(int(sum(numbers)))
                 assert season.totals[spec.key] == expected, (fixture, spec.key)
 
 
@@ -307,11 +308,11 @@ def test_turnovers_derived_for_qb_rb_and_defender() -> None:
     qb = ps.parse_gamelog(load("player_gl_nfl_darnold_2025"), NFL, TZ)
     season = _season(qb, 2025, "regular")
     assert season.totals["derived.TO"] == season.totals["passing.interceptions"]
-    assert season.totals["fumbles.fumblesLost"] == "-"
+    assert season.totals["fumbles.fumblesLost"] is None
     # Skattebo (RB, no passing category): INT thrown is missing, TO is fumbles lost.
     rb = ps.parse_gamelog(load("player_gl_nfl_adams_2025"), NFL, TZ)
     adams = _season(rb, 2025, "regular")
-    assert adams.totals["passing.interceptions"] == "-"
+    assert adams.totals["passing.interceptions"] is None
     assert adams.totals["derived.TO"] == adams.totals["fumbles.fumblesLost"]
     # Byard (defender): his interceptions are defensive and never counted into TO.
     defender = ps.parse_gamelog(load("player_gl_nfl_byard_2025"), NFL, TZ)
@@ -335,7 +336,7 @@ def test_turnovers_absent_when_no_component_category_present() -> None:
     }
     parsed = ps.parse_gamelog(raw, NFL, TZ)
     assert parsed.seasons[0].games[0].stats.get("derived.TO") is None
-    assert parsed.seasons[0].totals["derived.TO"] == "-"
+    assert parsed.seasons[0].totals["derived.TO"] is None
 
 
 def test_nba_gamelog_flattens_month_blocks_and_ignores_preseason() -> None:
@@ -346,7 +347,8 @@ def test_nba_gamelog_flattens_month_blocks_and_ignores_preseason() -> None:
     assert post.game_count == 5
     assert len(parsed.seasons) == 2  # the 3 preseason games are not listed
     assert "derived.TO" not in regular.games[0].stats  # TO is football-only (S3)
-    assert regular.totals["fieldGoalsMade-fieldGoalsAttempted"].count("-") == 1
+    fg_total = regular.totals["fieldGoalsMade-fieldGoalsAttempted"]
+    assert fg_total is not None and re.fullmatch(r"\d+-\d+", fg_total)  # a made-attempted pair
 
 
 def test_mlb_rates_recomputed_and_season_to_date_hidden() -> None:
@@ -359,8 +361,8 @@ def test_mlb_rates_recomputed_and_season_to_date_hidden() -> None:
     hits = sum(float(g.stats["hits"]) for g in regular.games)
     at_bats = sum(float(g.stats["atBats"]) for g in regular.games)
     assert regular.totals["avg"] == f"{hits / at_bats:.3f}"
-    assert regular.totals["onBasePct"] == "-"
-    assert regular.totals["OPS"] == "-"
+    assert regular.totals["onBasePct"] is None
+    assert regular.totals["OPS"] is None
 
 
 def test_gamelog_empty_season_is_not_an_error() -> None:

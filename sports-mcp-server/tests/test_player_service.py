@@ -395,8 +395,11 @@ async def test_row_capping_never_changes_season_totals(service: SportsService) -
     assert season["totals"]["atBats"] == regular.totals["atBats"]
     assert season["totals"]["avg"] == regular.totals["avg"]
     assert out.data["truncated"] is True
-    # the explanation is the first line under the header, so the size cap cannot remove it
-    assert re.match(r"\d+ oldest game rows are not listed", out.text.splitlines()[1])
+    # R2: the completeness line is directly under the header; the note follows it, above the
+    # seasons, so the size cap cannot remove either of them
+    lines = out.text.splitlines()
+    assert lines[1].startswith("Completeness: PARTIAL")
+    assert re.match(r"\d+ oldest game rows are not listed", lines[2])
     assert out.data["game_count"] == 153
 
 

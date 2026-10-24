@@ -58,6 +58,7 @@ from sports_mcp.normalize.player_stats import (
     Candidate,
     career_log,
     column_infos,
+    completeness_of,
     parse_gamelog,
     parse_profile,
     parse_search,
@@ -946,6 +947,7 @@ class SportsService:
                 seasons=chosen,
                 career=careers or None,
                 game_count=sum(s.game_count for s in chosen),
+                completeness=completeness_of(chosen, omitted),
                 truncated=True if omitted else None,
                 note=" ".join(trail) or None,
                 meta=self._meta_for(fetches, "player_gamelog", calls_note),
@@ -966,8 +968,16 @@ class SportsService:
         text_out = render.render_player_gamelog(result, lg, self.tz)
         limit = LOG_ALL_CHARS if season_arg == "all" else LOG_SEASON_CHARS
         if len(text_out) > limit:
-            result = result.model_copy(update={"truncated": True})
-            text_out = render.fit(text_out, limit, render.GAMELOG_NOTICE)
+            # The text cap cuts the newest rows, so the completeness line must say partial too.
+            cut = None
+            if result.completeness is not None:
+                cut = result.completeness.model_copy(update={"status": "partial"})
+            result = result.model_copy(update={"truncated": True, "completeness": cut})
+            text_out = render.fit(
+                render.render_player_gamelog(result, lg, self.tz, text_cut=True),
+                limit,
+                render.GAMELOG_NOTICE,
+            )
         return ToolOutput(text_out, dump(result), lg.id, _cache_label(*fetches))
 
     # ------------------------------------------------------------------ get_news
@@ -1021,16 +1031,26 @@ def _cap_games(result: PlayerGameLogResult) -> PlayerGameLogResult:
     if _structured_fits(result) or not result.seasons:
         return result
 
+    omitted_years = result.completeness.omitted_seasons if result.completeness else []
+
     def candidate(seasons: list[SeasonLog]) -> PlayerGameLogResult:
         omitted = sum(s.games_omitted or 0 for s in seasons)
+        completeness = completeness_of(seasons, omitted_years)
         if not omitted:
-            return result.model_copy(update={"seasons": seasons})
+            return result.model_copy(update={"seasons": seasons, "completeness": completeness})
         note = (
             f"{omitted} oldest game rows are not listed to fit the 60 KB structured budget; "
             "season and career totals cover all games."
         )
         joined = " ".join(x for x in (note, result.note) if x)
-        return result.model_copy(update={"seasons": seasons, "truncated": True, "note": joined})
+        return result.model_copy(
+            update={
+                "seasons": seasons,
+                "completeness": completeness,
+                "truncated": True,
+                "note": joined,
+            }
+        )
 
     seasons = list(result.seasons)
     while True:

@@ -348,6 +348,7 @@ class GameLogRow(_Model):
     result: str | None = None  # W | L | T, from the player's team's point of view
     score: str | None = None  # player's team first, e.g. "27-34"
     stats: dict[str, str]
+    no_stats: bool | None = None  # every allow-listed stat is 0 or missing (R3); set only when true
 
 
 class SeasonLog(_Model):
@@ -356,7 +357,7 @@ class SeasonLog(_Model):
     label: str  # ESPN block name, e.g. "2025 Regular Season"
     game_count: int  # every game in the block, including any omitted rows
     games: list[GameLogRow]  # the rows listed (oldest rows may be omitted for the size budget)
-    totals: dict[str, str]  # computed from every game in the block
+    totals: dict[str, str | None]  # computed from every game in the block; null = all missing
     computed: bool = True
     games_omitted: int | None = None  # oldest rows not listed (R16 structured budget)
 
@@ -365,8 +366,18 @@ class CareerLog(_Model):
     season_type: SeasonKind
     seasons: list[int]
     game_count: int
-    totals: dict[str, str]
+    totals: dict[str, str | None]
     computed: bool = True
+
+
+class Completeness(_Model):
+    """What a game log lists and what it omits (R2). Counts are listed games, keyed by year."""
+
+    status: Literal["complete", "partial"]
+    games: int
+    by_season: dict[int, int]
+    omitted_seasons: list[int] = []
+    omitted_rows: dict[int, int] = {}
 
 
 class PlayerGameLogResult(_Model):
@@ -380,6 +391,7 @@ class PlayerGameLogResult(_Model):
     seasons: list[SeasonLog] | None = None
     career: list[CareerLog] | None = None
     game_count: int = 0
+    completeness: Completeness | None = None
     truncated: bool | None = None
     note: str | None = None
     meta: Meta
@@ -436,4 +448,9 @@ def prune(value: Any) -> Any:
 def dump(model: BaseModel) -> dict[str, Any]:
     """The compact JSON-able form used for ``structuredContent``."""
     result: dict[str, Any] = prune(model.model_dump(mode="json", exclude_none=True))
+    completeness = getattr(model, "completeness", None)
+    if isinstance(completeness, Completeness):
+        # R2: every key is present, so an empty omitted_rows reads {} and omitted_seasons []
+        # (prune would otherwise drop the empty dict).
+        result["completeness"] = completeness.model_dump(mode="json")
     return result
