@@ -250,8 +250,11 @@ and candidates (call again with an `id`). `season_type`: `regular`, `post` or `a
 
 One row per game (date, week or playoff round, home/away, opponent, result and score from the player's team's point
 of view, stats) with totals computed from the listed games. `season`: `current`, a year (NBA `2025` means 2024-25) or
-`all` (the most recent `PLAYER_MAX_SEASONS` seasons, oldest dropped first). Career totals appear when more than one
-season is listed. Football shows fumbles, fumbles lost, interceptions thrown and TO (interceptions thrown + fumbles
+`all` (the whole career, up to `PLAYER_MAX_SEASONS` seasons, oldest dropped first). Career totals appear when more than
+one season is listed. The first line under the header is always a completeness line: `Completeness: complete - ...`,
+or `PARTIAL - ...` naming the omitted seasons or rows. A game with no recorded stats stays in the table and gets a note
+under its season (no reason is given). Missing and season-to-date cells show `n/a`; `-` is only a minus sign. A player
+given by name works directly; `find_player` is only needed to browse candidates. Football shows fumbles, fumbles lost, interceptions thrown and TO (interceptions thrown + fumbles
 lost; defensive interceptions are never counted). MLB season-to-date rate cells are not shown per game, and the totals
 row recomputes AVG from hits and at-bats. Settings: `TTL_PLAYER_SEARCH_SECONDS`, `TTL_PLAYER_SECONDS` and
 `PLAYER_MAX_SEASONS` (see `.env.example`). Design: `docs/specs/player-stats/SPEC.md`.

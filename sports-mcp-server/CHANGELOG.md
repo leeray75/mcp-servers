@@ -13,6 +13,17 @@ All notable changes to this project are documented here. The format follows
   Game logs pick regular or postseason blocks by display name, compute totals from the listed games and show football
   turnovers (TO = INT thrown + fumbles lost).
 - Settings `TTL_PLAYER_SEARCH_SECONDS` (default 3600), `TTL_PLAYER_SECONDS` (300) and `PLAYER_MAX_SEASONS` (10).
+- Player tools polish (spec `docs/specs/player-tools-polish/SPEC.md`): `get_player_gamelog` always states completeness in
+  one line under the header (`complete` or `PARTIAL`, with the omitted seasons or rows) and in structured
+  `completeness`; a game with no recorded stats is kept, noted under its season and flagged `no_stats`.
+
+### Changed
+
+- Player tool descriptions say `season=all` is the whole career (up to `PLAYER_MAX_SEASONS`) and that a player given by
+  name works directly; the "capped" and "most recent seasons" wording is gone.
+- Missing and season-to-date cells in player text tables render `n/a` instead of `-`, which now only means a minus sign.
+- Structured player totals whose inputs were all missing are now JSON `null` instead of `"-"` (spec amendment A1).
+  Structured data has no `"-"` or `"n/a"` placeholder strings.
 
 ## [0.1.0]
 

@@ -25,6 +25,7 @@ from sports_mcp.leagues import League
 from sports_mcp.models import (
     CareerLog,
     ColumnInfo,
+    Completeness,
     GameLogRow,
     PlayerStatCategory,
     PlayerStatColumn,
@@ -451,24 +452,27 @@ def column_infos(specs: tuple[Spec, ...]) -> list[ColumnInfo]:
 # --------------------------------------------------------------------------- totals
 
 
-def _sum_totals(values: list[str | None]) -> str:
+def _sum_totals(values: list[str | None]) -> str | None:
     numbers = [n for n in (to_number(v) for v in values) if n is not None]
     if not numbers:
-        return "-"
+        return None
     total = sum(numbers)
     return str(int(total)) if float(total).is_integer() else f"{total:.1f}"
 
 
-def compute_totals(rows: list[GameLogRow], specs: tuple[Spec, ...]) -> dict[str, str]:
-    """Computed totals from listed games (R9): summed, maxed, recomputed rates, or ``-``."""
-    totals: dict[str, str] = {}
+def compute_totals(rows: list[GameLogRow], specs: tuple[Spec, ...]) -> dict[str, str | None]:
+    """Computed totals from listed games (R9): summed, maxed, recomputed rates, or ``None``.
+
+    ``None`` (JSON null) means every input was missing (A1, R4); the text renders it as ``n/a``.
+    """
+    totals: dict[str, str | None] = {}
     for spec in specs:
         values = [row.stats.get(spec.key) for row in rows]
         if spec.reducer == "sum":
             totals[spec.key] = _sum_totals(values)
         elif spec.reducer == "max":
             numbers = [n for n in (to_number(v) for v in values) if n is not None]
-            totals[spec.key] = str(int(max(numbers))) if numbers else "-"
+            totals[spec.key] = str(int(max(numbers))) if numbers else None
         elif spec.reducer == "ratio" and spec.ratio is not None:
             num = [to_number(row.stats.get(spec.ratio[0])) for row in rows]
             den = [to_number(row.stats.get(spec.ratio[1])) for row in rows]
@@ -476,19 +480,19 @@ def compute_totals(rows: list[GameLogRow], specs: tuple[Spec, ...]) -> dict[str,
             den_values = [d for d in den if d is not None]
             denominator = sum(den_values)
             if not num_values or not den_values or denominator == 0:
-                totals[spec.key] = "-"
+                totals[spec.key] = None
             else:
                 totals[spec.key] = format_number(sum(num_values) / denominator, spec.digits)
         elif spec.reducer == "pair":
             parts = [p for p in (pair_parts(v) for v in values) if p is not None]
             if not parts:
-                totals[spec.key] = "-"
+                totals[spec.key] = None
             else:
                 totals[spec.key] = (
                     f"{int(sum(p[0] for p in parts))}-{int(sum(p[1] for p in parts))}"
                 )
         else:
-            totals[spec.key] = "-"
+            totals[spec.key] = None
     return totals
 
 
@@ -654,6 +658,10 @@ def parse_gamelog(raw: dict[str, Any], lg: League, tz: ZoneInfo) -> ParsedGameLo
             continue
         games.sort(key=lambda item: item[0].timestamp() if item[0] else 0.0)
         rows = [row for _, row in games]
+        rows = [
+            row.model_copy(update={"no_stats": True}) if no_recorded_stats(row, specs) else row
+            for row in rows
+        ]
         seasons.append(
             SeasonLog(
                 year=_season_year(label),
@@ -666,6 +674,42 @@ def parse_gamelog(raw: dict[str, Any], lg: League, tz: ZoneInfo) -> ParsedGameLo
         )
     seasons.sort(key=lambda s: (s.year, s.season_type == "post"))
     return ParsedGameLog(specs, seasons, frozenset(keys))
+
+
+def _is_zeroish(value: str | None) -> bool:
+    """A missing cell, a numeric zero, or a made-attempted pair of zeros (``0-0``)."""
+    if value is None:
+        return True
+    number = to_number(value)
+    if number is not None:
+        return number == 0
+    pair = pair_parts(value)
+    return pair is not None and pair == (0.0, 0.0)
+
+
+def no_recorded_stats(row: GameLogRow, specs: tuple[Spec, ...]) -> bool:
+    """R3: every allow-listed stat of the game is zero or missing. Says nothing about why."""
+    keys = [spec.key for spec in specs]
+    return bool(keys) and all(_is_zeroish(row.stats.get(key)) for key in keys)
+
+
+def completeness_of(seasons: list[SeasonLog], omitted_years: list[int]) -> Completeness:
+    """R2: what the log lists (games by year) and what it omits (whole seasons, oldest rows)."""
+    by_season: dict[int, int] = {}
+    omitted_rows: dict[int, int] = {}
+    for season in seasons:
+        by_season[season.year] = by_season.get(season.year, 0) + len(season.games)
+        if season.games_omitted:
+            omitted_rows[season.year] = omitted_rows.get(season.year, 0) + season.games_omitted
+    omitted = sorted(set(omitted_years))
+    partial = bool(omitted or omitted_rows)
+    return Completeness(
+        status="partial" if partial else "complete",
+        games=sum(by_season.values()),
+        by_season=dict(sorted(by_season.items())),
+        omitted_seasons=omitted,
+        omitted_rows=dict(sorted(omitted_rows.items())),
+    )
 
 
 def career_log(

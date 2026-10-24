@@ -56,7 +56,7 @@ host this server already allows. The server should expose them as compact, corre
 | D9 | Artifact location | `docs/specs/player-stats/` for spec and reports. |
 | D10 (A1) | Id lookups need name/team/position | Add the **athlete profile endpoint** as a fourth URL builder (same host, digits-only id). |
 | D11 (A1) | Postseason mechanics (ESPN ignores `seasontype` on the gamelog) | **Filter by block name**: select regular/post blocks from the gamelog response by `displayName`; drop the `season_type` argument from the gamelog URL builder; ignore preseason blocks. |
-| D12 (A1) | MLB season-to-date rate columns | **Recompute AVG from H/AB; show `-` in totals for OBP/SLG/OPS**; per-game rate cells are labelled season-to-date or hidden. |
+| D12 (A1) | MLB season-to-date rate columns | **Recompute AVG from H/AB; show `n/a` in totals for OBP/SLG/OPS**; per-game rate cells are labelled season-to-date or hidden. |
 
 Decisions made by the spec author within the delegated scope (flagged for the human to veto at approval):
 
@@ -117,12 +117,13 @@ Each requirement is individually testable. "Fixture" means a captured real ESPN 
   expected fields yields a clear `UpstreamError`, never a crash or a fabricated value.
 - **R9. Computed totals (D6).** Per stat the allow-list declares a reducer: `sum`, `max` (for "longest" stats such as LNG),
   `ratio(numerator, denominator)` (for averages such as yards per carry, completion percentage, yards per reception, batting average),
-  `pair` (composite `a/b` values such as completions/attempts, summed component-wise) or `none` (shown as `-` in totals). Rates are
-  recomputed from summed components, never averaged or summed. Dash/empty cells (`-`, `""`) are treated as missing, not zero, and a
-  total whose inputs were all missing is `-`. A game with all-zero stats still counts as a game played (the Skattebo case).
+  `pair` (composite `a/b` values such as completions/attempts, summed component-wise) or `none` (shown as `n/a` in text totals, `null`
+  in structured data). Rates are recomputed from summed components, never averaged or summed. Dash/empty cells (`-`, `""`) are treated
+  as missing, not zero, and a total whose inputs were all missing is `n/a` in text and JSON `null` in structured data (player-tools-polish
+  A1). A game with all-zero stats still counts as a game played (the Skattebo case).
   **Season-to-date rate columns (A1/D12):** some upstream per-game columns are season-to-date, not per game (MLB `avg`, `obp`, `slg`,
   `ops`). They are shown only if labelled "season-to-date" (or hidden from the text and kept in structured data). In totals, `avg` is
-  recomputed as H/AB; `obp`, `slg` and `ops` are `-` because they cannot be rebuilt from game rows.
+  recomputed as H/AB; `obp`, `slg` and `ops` are `n/a` (structured `null`) because they cannot be rebuilt from game rows.
   Totals rows are labelled **"computed from listed games"** in text and carry `computed: true` in structured data.
 - **R10. ESPN totals kept distinct.** `get_player_stats` shows ESPN's own season and career totals unmodified and labelled as ESPN
   totals. They are never merged with, or silently corrected to match, the computed totals from `get_player_gamelog`.
@@ -133,7 +134,7 @@ Each requirement is individually testable. "Fixture" means a captured real ESPN 
 - **R11. Games played.** The gamelog result states the number of games listed per season and in total, counting zero-stat games.
 - **R12. Football turnovers (D6, S3).** For the `football` family the game rows and totals include: fumbles (`FUM`), fumbles lost
   (`LST`), interceptions thrown (`INT`, passing category, only for players who have a passing category) and a derived
-  **`TO` = interceptions thrown + fumbles lost**. `TO` is computed by the server, labelled as derived, and is `-` for a player with
+  **`TO` = interceptions thrown + fumbles lost**. `TO` is computed by the server, labelled as derived, and is `n/a` (structured `null`) for a player with
   neither stat category present. Defensive interceptions (a defender intercepting a pass) are a different stat and must never be
   counted into `TO` or shown under `INT`; they appear, if at all, under their own defensive label.
 - **R13. Freshness envelope.** Every result carries `meta` as in `docs/SPEC.md` 5.9 (`source`, `as_of` = the upstream fetch time of
@@ -293,3 +294,7 @@ in-season row cap. Proposed spec text, documenting what was built:
 - **Columns (R8/R12 clarification).** Text tables show a stat category's columns only if the player's payload has that category
   (a running back has no Passing columns; a non-defender has no Defense columns); structured data is unaffected.
 - **Wording.** The totals label says "computed from all N games" when rows are omitted and "computed from listed games" otherwise.
+- **Polish (2026-10-24).** Amended by `docs/specs/player-tools-polish/SPEC.md`: R1 (descriptions: whole career, name works
+  directly), R3 (no-recorded-stats note), the completeness line (R2) and the `n/a` marker (R4) supersede the wording above
+  where they differ. The "missing" marker `-` in the legend and tables is now `n/a`. Structured all-missing totals are JSON `null`
+  (was `"-"`); see `docs/specs/player-tools-polish/SPEC.md` A1.
