@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Player tools `find_player`, `get_player_stats` and `get_player_gamelog` (tool set 8 -> 11; spec
+  `docs/specs/player-stats/SPEC.md`, amendment A1). Names get typo retries; athlete ids use the profile endpoint.
+  Game logs pick regular or postseason blocks by display name, compute totals from the listed games and show football
+  turnovers (TO = INT thrown + fumbles lost).
+- Settings `TTL_PLAYER_SEARCH_SECONDS` (default 3600), `TTL_PLAYER_SECONDS` (300) and `PLAYER_MAX_SEASONS` (10).
+
 ## [0.1.0]
 
 ### Added

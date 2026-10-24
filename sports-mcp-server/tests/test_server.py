@@ -27,6 +27,9 @@ EXPECTED_TOOLS = {
     "find_team",
     "get_team_schedule",
     "get_news",
+    "find_player",
+    "get_player_stats",
+    "get_player_gamelog",
 }
 NFL_BOARD = "/apis/site/v2/sports/football/nfl/scoreboard?dates=20261004"
 

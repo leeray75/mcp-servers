@@ -6,6 +6,9 @@ payloads and renders the compact text. It knows nothing about MCP; ``server.py``
 
 from __future__ import annotations
 
+import asyncio
+import json
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,6 +23,7 @@ from sports_mcp.errors import InvalidInputError, NotFoundError, SportsMcpError, 
 from sports_mcp.espn_client import EspnClient
 from sports_mcp.leagues import LEAGUES, League, resolve_league
 from sports_mcp.models import (
+    CareerLog,
     FindTeamResult,
     Game,
     GameDetail,
@@ -30,8 +34,15 @@ from sports_mcp.models import (
     OddsGame,
     OddsResult,
     OddsStatus,
+    PlayerGameLogResult,
+    PlayerRef,
+    PlayerSearchResult,
+    PlayerStatBlock,
+    PlayerStatsResult,
     ScheduleResult,
     ScoreboardResult,
+    SeasonKind,
+    SeasonLog,
     StandingsResult,
     TeamMatch,
     dump,
@@ -41,6 +52,23 @@ from sports_mcp.normalize import standings as standings_mod
 from sports_mcp.normalize import summary as summary_mod
 from sports_mcp.normalize import teams as teams_mod
 from sports_mcp.normalize.common import as_dict, as_list, get
+from sports_mcp.normalize.player_stats import (
+    MAX_CANDIDATES,
+    SEARCH_LIMIT,
+    Candidate,
+    career_log,
+    column_infos,
+    parse_gamelog,
+    parse_profile,
+    parse_search,
+    parse_stats,
+    rank_for_listing,
+    resolve,
+    retry_queries,
+    seasons_played,
+    specs_for,
+    visible_specs,
+)
 from sports_mcp.normalize.scoreboard import (
     empty_day_hint,
     has_live_game,
@@ -78,7 +106,7 @@ def _cache_label(*fetches: Fetched) -> str:
 
 
 class SportsService:
-    """All eight tools as plain async methods."""
+    """All tools as plain async methods."""
 
     def __init__(
         self,
@@ -644,6 +672,304 @@ class SportsService:
             _cache_label(fetched),
         )
 
+    # ------------------------------------------------------------------ player tools
+
+    def _meta_for(self, fetches: list[Fetched], kind: str, note: str | None = None) -> Meta:
+        """Freshness of a multi-call result: ``as_of`` is the oldest contributing response (R13)."""
+        oldest = min(fetches, key=lambda f: f.fetched_at)
+        stale = any(f.stale for f in fetches)
+        stale_note = (
+            "A live fetch from ESPN failed for part of this result; the last good copy is shown."
+            if stale
+            else None
+        )
+        return Meta(
+            as_of=utc_iso(oldest.fetched_at),
+            cache_age_seconds=max(f.age_seconds for f in fetches),
+            cached=all(f.cached for f in fetches),
+            endpoint_kind=kind,
+            stale=True if stale else None,
+            note=" ".join(x for x in (stale_note, note) if x) or None,
+        )
+
+    async def _search(
+        self, lg: League, query: str, refresh: bool, fetches: list[Fetched]
+    ) -> tuple[list[Candidate], bool]:
+        """Search for ``query`` in ``lg``; on zero matches try the prefix retries (R5)."""
+
+        async def search(text_query: str) -> list[Candidate]:
+            fetched = await self._fetch(
+                self.client.player_search_url(text_query, SEARCH_LIMIT),
+                lambda _r: self.settings.ttl_player_search_seconds,
+                refresh=refresh,
+            )
+            fetches.append(fetched)
+            return parse_search(as_dict(fetched.value), lg)
+
+        candidates = await search(query)
+        if candidates:
+            return candidates, False
+        for retry in retry_queries(query):
+            candidates = await search(retry)
+            if candidates:
+                return candidates, True
+        return [], False
+
+    async def _resolve_player(
+        self, lg: League, player: str, refresh: bool, fetches: list[Fetched]
+    ) -> tuple[PlayerRef | None, list[PlayerRef], str | None]:
+        """R4: an id uses the profile; a name is searched and resolved, or left unresolved."""
+        if _PLAYER_ID.fullmatch(player):
+            try:
+                fetched = await self._fetch(
+                    self.client.player_profile_url(lg, player),
+                    lambda _r: self.settings.ttl_player_search_seconds,
+                    refresh=refresh,
+                    id_endpoint=True,
+                )
+            except NotFoundError:
+                raise NotFoundError(f"Athlete not found for league {lg.id}") from None
+            fetches.append(fetched)
+            profile = parse_profile(as_dict(fetched.value), player)
+            ref = PlayerRef(
+                id=profile.id,
+                name=profile.name,
+                team=profile.team,
+                position=profile.position,
+                league=lg.id,
+                match="id",
+            )
+            return ref, [], None
+        query = _player_name(player)
+        candidates, fuzzy = await self._search(lg, query, refresh, fetches)
+        resolution = resolve(query, candidates, fuzzy)
+        if resolution.chosen is not None:
+            chosen = resolution.chosen
+            ref = PlayerRef(
+                id=chosen.id,
+                name=chosen.name,
+                team=chosen.team,
+                league=lg.id,
+                match=resolution.match,  # type: ignore[arg-type]
+            )
+            return ref, [], None
+        ranked = rank_for_listing(query, candidates, fuzzy)[:MAX_CANDIDATES]
+        refs = [
+            PlayerRef(id=c.id, name=c.name, team=c.team, league=lg.id, match=m)  # type: ignore[arg-type]
+            for c, m in ranked
+        ]
+        if refs:
+            note = "No single clear match. Call again with player=<id> using one of the ids above."
+        else:
+            note = f"No {lg.id} player matches '{query}'. Try another spelling."
+        return None, refs, note
+
+    async def find_player(
+        self, league: str, query: str, limit: int = 5, refresh: bool = False
+    ) -> ToolOutput:
+        lg = resolve_league(league)
+        name = _player_name(query)
+        fetches: list[Fetched] = []
+        candidates, fuzzy = await self._search(lg, name, refresh, fetches)
+        ranked = rank_for_listing(name, candidates, fuzzy)[:limit]
+        players = [
+            PlayerRef(id=c.id, name=c.name, team=c.team, league=lg.id, match=m)  # type: ignore[arg-type]
+            for c, m in ranked
+        ]
+        notes: list[str] = []
+        if fuzzy and players:
+            notes.append("No exact spelling found; closest matches shown.")
+        if not players:
+            notes.append(f"No {lg.name} player matches '{name}'. Try another spelling.")
+        result = PlayerSearchResult(
+            league=lg.id,
+            query=name,
+            players=players,
+            count=len(players),
+            note=" ".join(notes) or None,
+            meta=self._meta_for(fetches, "player_search"),
+        )
+        text_out = render.fit(render.render_player_search(result, lg, self.tz), PLAYER_SEARCH_CHARS)
+        return ToolOutput(text_out, dump(result), lg.id, _cache_label(*fetches))
+
+    async def get_player_stats(
+        self,
+        league: str,
+        player: str,
+        season_type: str = "regular",
+        refresh: bool = False,
+    ) -> ToolOutput:
+        lg = resolve_league(league)
+        _season_type_kinds(season_type)
+        fetches: list[Fetched] = []
+        ref, candidates, note = await self._resolve_player(lg, player, refresh, fetches)
+        if ref is None:
+            unresolved = PlayerStatsResult(
+                league=lg.id,
+                resolved=False,
+                candidates=candidates,
+                season_type=season_type,
+                note=note,
+                meta=self._meta_for(fetches, "player_stats"),
+            )
+            text_out = render.render_player_stats(unresolved, lg, self.tz)
+            return ToolOutput(text_out, dump(unresolved), lg.id, _cache_label(*fetches))
+        notes: list[str] = []
+        blocks: list[PlayerStatBlock] = []
+        for kind in _season_type_kinds(season_type):
+            fetched = await self._fetch(
+                self.client.player_stats_url(lg, ref.id, kind),
+                lambda _r: self.settings.ttl_player_seconds,
+                refresh=refresh,
+                id_endpoint=True,
+            )
+            fetches.append(fetched)
+            categories = parse_stats(as_dict(fetched.value), kind)
+            if kind == "post" and not categories:
+                notes.append("No postseason stats are listed for this player.")
+            blocks.append(
+                PlayerStatBlock(
+                    season_type=kind,
+                    label="Postseason" if kind == "post" else "Regular season",
+                    categories=categories,
+                )
+            )
+        if all(not block.categories for block in blocks):
+            notes.append("ESPN lists no stats for this player.")
+        result = PlayerStatsResult(
+            league=lg.id,
+            resolved=True,
+            player=ref,
+            season_type=season_type,
+            blocks=blocks,
+            note=" ".join(notes) or None,
+            meta=self._meta_for(fetches, "player_stats"),
+        )
+        text_out = render.fit(render.render_player_stats(result, lg, self.tz), STATS_CHARS)
+        return ToolOutput(text_out, dump(result), lg.id, _cache_label(*fetches))
+
+    async def get_player_gamelog(
+        self,
+        league: str,
+        player: str,
+        season: str = "current",
+        season_type: str = "regular",
+        refresh: bool = False,
+    ) -> ToolOutput:
+        lg = resolve_league(league)
+        kinds = _season_type_kinds(season_type)
+        season_arg = _season_arg(season)
+        fetches: list[Fetched] = []
+        ref, candidates, note = await self._resolve_player(lg, player, refresh, fetches)
+        if ref is None:
+            unresolved = PlayerGameLogResult(
+                league=lg.id,
+                resolved=False,
+                candidates=candidates,
+                season=season,
+                season_type=season_type,
+                note=note,
+                meta=self._meta_for(fetches, "player_gamelog"),
+            )
+            text_out = render.render_player_gamelog(unresolved, lg, self.tz)
+            return ToolOutput(text_out, dump(unresolved), lg.id, _cache_label(*fetches))
+
+        years_omitted: list[int] = []
+        if season_arg == "all":
+            stats_fetch = await self._fetch(
+                self.client.player_stats_url(lg, ref.id, "regular"),
+                lambda _r: self.settings.ttl_player_seconds,
+                refresh=refresh,
+                id_endpoint=True,
+            )
+            fetches.append(stats_fetch)
+            years_listed = seasons_played(as_dict(stats_fetch.value))
+            limit = self.settings.player_max_seasons
+            years_fetched = years_listed[:limit]
+            years_omitted = years_listed[limit:]
+            targets: list[int | None] = list(years_fetched)
+        elif season_arg == "current":
+            targets = [None]
+        else:
+            targets = [int(season_arg)]
+        logs = await asyncio.gather(
+            *(
+                self._fetch(
+                    self.client.player_gamelog_url(lg, ref.id, year),
+                    lambda _r: self.settings.ttl_player_seconds,
+                    refresh=refresh,
+                    id_endpoint=True,
+                )
+                for year in targets
+            )
+        )
+        lookup_calls = len(fetches) - (1 if season_arg == "all" else 0)
+        fetches.extend(logs)
+        parsed = [parse_gamelog(as_dict(f.value), lg, self.tz) for f in logs]
+        base_specs = parsed[0].specs if parsed else specs_for(lg.family, [])
+        present: set[str] = set()
+        for item in parsed:
+            present |= item.present
+        columns = column_infos(visible_specs(base_specs, present))
+        seasons = [s for p in parsed for s in p.seasons if s.season_type in kinds]
+        seasons.sort(key=lambda s: (s.year, s.season_type == "post"))  # chronological
+        notes: list[str] = []
+        if not seasons:
+            notes.append(_no_games_note(season, season_type))
+        calls_note = None
+        if season_arg == "all":
+            calls_note = (
+                f"Built from {len(fetches)} upstream calls: {lookup_calls} lookup, "
+                f"1 stats, {len(logs)} game logs."
+            )
+        all_years = sorted({s.year for s in seasons}, reverse=True)
+
+        def build(years: list[int], omitted: list[int]) -> PlayerGameLogResult:
+            # Totals and careers are computed here, from every game of each kept season.
+            chosen = [s for s in seasons if s.year in years]
+            careers: list[CareerLog] = []
+            if len({s.year for s in chosen}) > 1:
+                for kind in kinds:
+                    career = career_log(chosen, kind, base_specs)
+                    if career is not None:
+                        careers.append(career)
+            trail = list(notes)
+            if omitted:
+                trail.append(_omitted_note(omitted))
+            return PlayerGameLogResult(
+                league=lg.id,
+                resolved=True,
+                player=ref,
+                season=season,
+                season_type=season_type,
+                columns=columns,
+                seasons=chosen,
+                career=careers or None,
+                game_count=sum(s.game_count for s in chosen),
+                truncated=True if omitted else None,
+                note=" ".join(trail) or None,
+                meta=self._meta_for(fetches, "player_gamelog", calls_note),
+            )
+
+        years_kept = all_years if season_arg != "all" else list(years_fetched)
+        omitted_all = list(years_omitted)
+        result = build(years_kept, omitted_all)
+        if season_arg == "all":
+            # R6/R16: whole oldest seasons go first while the text or structured data is too big.
+            while len(years_kept) > 1 and (
+                len(render.render_player_gamelog(result, lg, self.tz)) > LOG_ALL_CHARS
+                or not _structured_fits(result)
+            ):
+                omitted_all.insert(0, years_kept.pop())
+                result = build(years_kept, omitted_all)
+        result = _cap_games(result)
+        text_out = render.render_player_gamelog(result, lg, self.tz)
+        limit = LOG_ALL_CHARS if season_arg == "all" else LOG_SEASON_CHARS
+        if len(text_out) > limit:
+            result = result.model_copy(update={"truncated": True})
+            text_out = render.fit(text_out, limit, render.GAMELOG_NOTICE)
+        return ToolOutput(text_out, dump(result), lg.id, _cache_label(*fetches))
+
     # ------------------------------------------------------------------ get_news
 
     async def get_news(self, league: str, limit: int = 5, refresh: bool = False) -> ToolOutput:
@@ -669,6 +995,112 @@ class SportsService:
 MAX_STANDINGS_ENTRIES: Final = 100
 MAX_SCOREBOARD_GAMES: Final = 100
 MAX_LIMIT: Final = 500
+
+
+PLAYER_SEARCH_CHARS: Final = 2000  # R16
+STATS_CHARS: Final = 8000  # R16: get_player_stats text
+LOG_SEASON_CHARS: Final = 8000  # R16: one season of a game log
+LOG_ALL_CHARS: Final = 20000  # R16: season=all text
+STRUCTURED_CHARS: Final = 60000  # R16: structured data for season=all
+_PLAYER_ID: Final = re.compile(r"[0-9]{1,12}")  # R4: an ESPN athlete id
+_SEASON_YEAR: Final = re.compile(r"[0-9]{4}")
+
+
+def _structured_fits(result: PlayerGameLogResult) -> bool:
+    """R16: structured data for a game log stays within 60 KB."""
+    return len(json.dumps(dump(result), default=str)) <= STRUCTURED_CHARS
+
+
+def _cap_games(result: PlayerGameLogResult) -> PlayerGameLogResult:
+    """R16 structured budget: drop the oldest game rows, largest block first (M1, M2).
+
+    Only rows go. Season totals and career totals were computed from every game before this runs,
+    so they never change. Every candidate already carries the note that says which rows are not
+    listed, so the size check measures the final output. Each pass drops at least one row.
+    """
+    if _structured_fits(result) or not result.seasons:
+        return result
+
+    def candidate(seasons: list[SeasonLog]) -> PlayerGameLogResult:
+        omitted = sum(s.games_omitted or 0 for s in seasons)
+        if not omitted:
+            return result.model_copy(update={"seasons": seasons})
+        note = (
+            f"{omitted} oldest game rows are not listed to fit the 60 KB structured budget; "
+            "season and career totals cover all games."
+        )
+        joined = " ".join(x for x in (note, result.note) if x)
+        return result.model_copy(update={"seasons": seasons, "truncated": True, "note": joined})
+
+    seasons = list(result.seasons)
+    while True:
+        probe = candidate(seasons)
+        size = len(json.dumps(dump(probe), default=str))
+        if size <= STRUCTURED_CHARS:
+            return probe
+        index = max(range(len(seasons)), key=lambda i: len(seasons[i].games))
+        held = seasons[index].games
+        if len(held) <= 1:
+            return probe  # nothing left to drop; the caller's text cap still applies
+        rows = sum(len(s.games) for s in seasons)
+        per_row = size / rows
+        excess = size - STRUCTURED_CHARS
+        drop = min(len(held) - 1, max(1, math.ceil(excess / per_row)))
+        already = seasons[index].games_omitted or 0
+        seasons[index] = seasons[index].model_copy(
+            update={"games": held[drop:], "games_omitted": already + drop}
+        )
+
+
+def _player_name(value: str) -> str:
+    """A player name: 1-60 letters, digits, spaces, . ' or - (no other characters reach ESPN)."""
+    query = value.strip() if isinstance(value, str) else ""
+    if not 1 <= len(query) <= 60 or not re.fullmatch(r"[\w .'-]+", query) or "_" in query:
+        raise InvalidInputError(
+            "player must be an ESPN athlete id (digits) or a name of 1-60 letters, digits, "
+            "spaces, . ' or -."
+        )
+    return query
+
+
+def _season_type_kinds(season_type: str) -> list[SeasonKind]:
+    """``regular`` | ``post`` | ``all`` -> the ESPN block kinds it selects (R7)."""
+    if season_type == "all":
+        return ["regular", "post"]
+    if season_type == "regular":
+        return ["regular"]
+    if season_type == "post":
+        return ["post"]
+    raise InvalidInputError("season_type must be one of: regular, post, all.")
+
+
+def _season_arg(season: str) -> str | int:
+    """``current`` | ``all`` | a year from 1990 to 2100 (R6)."""
+    if season in ("current", "all"):
+        return season
+    if not isinstance(season, str) or not _SEASON_YEAR.fullmatch(season):
+        raise InvalidInputError("season must be 'current', 'all' or a year from 1990 to 2100.")
+    year = int(season)
+    if not 1990 <= year <= 2100:
+        raise InvalidInputError("season must be 'current', 'all' or a year from 1990 to 2100.")
+    return year
+
+
+def _no_games_note(season: str, season_type: str) -> str:
+    noun = "postseason games" if season_type == "post" else "games"
+    when = {
+        "current": "in the current season",
+        "all": "in any season",
+    }.get(season, f"in {season}")
+    return f"No {noun} listed {when} for this player."
+
+
+def _omitted_note(years: list[int]) -> str:
+    """R6 wording: ``3 earlier seasons omitted (2016-2018); call with season=YYYY``."""
+    low, high = min(years), max(years)
+    span = str(low) if low == high else f"{low}-{high}"
+    noun = "season" if len(years) == 1 else "seasons"
+    return f"{len(years)} earlier {noun} omitted ({span}); call with season=YYYY."
 
 
 def _odds_game(game: Game, lines: Any) -> OddsGame:

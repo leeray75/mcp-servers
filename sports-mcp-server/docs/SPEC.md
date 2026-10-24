@@ -3,6 +3,10 @@
 Status: draft v1 (2026-10-04). Authoritative for implementation and review. Keywords MUST / SHOULD / MAY
 are used in the RFC 2119 sense. "Stretch" items are optional and only attempted after every MUST passes review.
 
+> **Amendment pointer (2026-10-24):** the player tools `find_player`, `get_player_stats` and
+> `get_player_gamelog` are specified in `docs/specs/player-stats/SPEC.md`, which governs them where it conflicts
+> with this document. The tool set grows from 8 to 11 (its section 7).
+
 ## 1. Purpose
 
 Give agents **live, compact, correctly-labelled sports data** (scores, schedules, standings, box scores with
@@ -88,7 +92,7 @@ Unknown league input => tool error listing the valid ids (that list is the only 
 
 All tools: read-only (`ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
 open_world_hint=True)`), no side effects, inputs validated by pydantic (`Annotated` + `Field`), registered with explicit
-`name` and `description`. Exactly these 8 tools (a test asserts the set):
+`name` and `description`. Exactly these 8 tools (a test asserts the set; amended to 11 by `docs/specs/player-stats/SPEC.md`):
 
 | Tool | Purpose |
 |---|---|

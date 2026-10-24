@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Final
 from urllib.parse import urlencode, urlsplit
@@ -19,13 +20,19 @@ import httpx
 
 from sports_mcp import __version__
 from sports_mcp.config import Settings
-from sports_mcp.errors import NotFoundError, UpstreamError
+from sports_mcp.errors import InvalidInputError, NotFoundError, UpstreamError
 from sports_mcp.leagues import League
 
 logger = logging.getLogger(__name__)
 
 SITE_V2: Final = "/apis/site/v2/sports"
 V2: Final = "/apis/v2/sports"
+PLAYERS: Final = "/apis/common/v3/sports"
+PLAYER_SEARCH: Final = "/apis/common/v3/search"
+_PLAYER_QUERY: Final = re.compile(r"[\w .'-]{1,60}")
+_PLAYER_SEASON_TYPES: Final = frozenset({"regular", "post"})
+_PLAYER_SEASON_MIN: Final = 1990
+_PLAYER_SEASON_MAX: Final = 2100
 _RETRY_STATUS: Final = range(500, 600)
 _ID: Final = frozenset("0123456789")
 
@@ -153,6 +160,39 @@ class EspnClient:
 
     def news_url(self, league: League, limit: int) -> str:
         return self.build_url(f"{SITE_V2}/{league.path}/news", {"limit": limit})
+
+    # Player endpoints (common/v3). The search query is the only free text sent upstream: a
+    # URL-encoded query parameter, length-limited and restricted to letters, digits and . ' -.
+
+    def player_search_url(self, query: str, limit: int) -> str:
+        if not _PLAYER_QUERY.fullmatch(query) or "_" in query:
+            raise InvalidInputError("Player name must be 1-60 letters, digits, spaces, . ' or -.")
+        return self.build_url(PLAYER_SEARCH, {"query": query, "limit": limit, "type": "player"})
+
+    def player_profile_url(self, league: League, athlete_id: str) -> str:
+        return self.build_url(
+            f"{PLAYERS}/{league.path}/athletes/{_digits(athlete_id, 'athlete id')}"
+        )
+
+    def player_stats_url(self, league: League, athlete_id: str, season_type: str) -> str:
+        """Season stats. ``post`` adds ``seasontype=3`` (ESPN honours it on this endpoint only)."""
+        if season_type not in _PLAYER_SEASON_TYPES:
+            raise InvalidInputError("season_type must be one of: regular, post.")
+        params: dict[str, str | int] = {"seasontype": 3} if season_type == "post" else {}
+        return self.build_url(
+            f"{PLAYERS}/{league.path}/athletes/{_digits(athlete_id, 'athlete id')}/stats", params
+        )
+
+    def player_gamelog_url(self, league: League, athlete_id: str, season: int | None) -> str:
+        """Game log for one season (``None`` = ESPN's current season). Carries both season types."""
+        params: dict[str, str | int] = {}
+        if season is not None:
+            if not _PLAYER_SEASON_MIN <= season <= _PLAYER_SEASON_MAX:
+                raise InvalidInputError("season must be a year from 1990 to 2100.")
+            params["season"] = season
+        return self.build_url(
+            f"{PLAYERS}/{league.path}/athletes/{_digits(athlete_id, 'athlete id')}/gamelog", params
+        )
 
     # ------------------------------------------------------------------ fetching
 

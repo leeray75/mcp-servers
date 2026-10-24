@@ -2,22 +2,31 @@
 
 from __future__ import annotations
 
+from typing import Final
 from zoneinfo import ZoneInfo
 
 from sports_mcp.dates import parse_espn_time
 from sports_mcp.leagues import League
 from sports_mcp.models import (
+    CareerLog,
     FindTeamResult,
     Game,
     GameDetail,
+    GameLogRow,
     LeaguesResult,
     Meta,
     NewsResult,
     OddsLine,
     OddsResult,
+    PlayerGameLogResult,
+    PlayerRef,
+    PlayerSearchResult,
+    PlayerStatBlock,
+    PlayerStatsResult,
     ScheduleGame,
     ScheduleResult,
     ScoreboardResult,
+    SeasonLog,
     StandingsResult,
     TeamLine,
 )
@@ -442,13 +451,213 @@ def render_leagues(result: LeaguesResult) -> str:
     return "\n".join(lines)
 
 
-def fit(text: str, limit: int) -> str:
+# --------------------------------------------------------------------------- player tables
+
+PLAYER_FOOTNOTE: Final = (
+    "Totals are 'computed from listed games', or 'computed from all N games' where a heading "
+    "says rows were omitted; '-' means missing (or season-to-date, not per game)."
+)
+
+
+def _table(columns: list[tuple[str, str]], rows: list[list[str]]) -> list[str]:
+    """Aligned table. ``columns`` are (group heading, label); a group heading is printed once,
+    before the first column of its run, and separated from the previous group by ``|``."""
+    widths = [
+        max([len(label)] + [len(row[i]) for row in rows]) for i, (_, label) in enumerate(columns)
+    ]
+    leads: list[tuple[str, str]] = []
+    for i, (group, _) in enumerate(columns):
+        starts_group = i == 0 or columns[i - 1][0] != group
+        lead = "" if i == 0 else (" | " if starts_group else " ")
+        heading = f"{group}: " if starts_group and group else ""
+        leads.append((lead, heading))
+
+    def compose(cells: list[str], head: bool) -> str:
+        pieces = []
+        for (lead, heading), width, cell in zip(leads, widths, cells, strict=True):
+            pieces.append(lead + (heading if head else " " * len(heading)) + cell.rjust(width))
+        return "".join(pieces).rstrip()
+
+    lines = [compose([label for _, label in columns], True)]
+    lines.extend(compose(row, False) for row in rows)
+    return lines
+
+
+def _player_line(ref: PlayerRef, league: League) -> str:
+    parts = [ref.name or "name unknown"]
+    if ref.position:
+        parts.append(ref.position)
+    if ref.team:
+        parts.append(ref.team)
+    marker = f" [{ref.match}]" if ref.match else ""
+    return f"{', '.join(parts)} (id {ref.id}){marker}"
+
+
+def _header(player: PlayerRef, league: League) -> str:
+    return f"{league.name} | {_player_line(player, league)}"
+
+
+def _candidate_lines(candidates: list[PlayerRef], league: League) -> list[str]:
+    return [f"  - {_player_line(c, league)}" for c in candidates]
+
+
+def render_player_search(result: PlayerSearchResult, league: League, tz: ZoneInfo) -> str:
+    lines = [
+        f"{league.name} | player search '{result.query}' | {result.count} match"
+        f"{'' if result.count == 1 else 'es'} | {freshness(result.meta, tz)}"
+    ]
+    lines.extend(f"- {_player_line(p, league)}" for p in result.players)
+    if result.note:
+        lines.append(result.note)
+    return "\n".join(lines)
+
+
+def _unresolved_block(
+    league: League, candidates: list[PlayerRef] | None, note: str | None
+) -> list[str]:
+    lines = [f"{league.name} | no single player matched; candidates:"]
+    lines.extend(_candidate_lines(candidates or [], league))
+    if note:
+        lines.append(note)
+    return lines
+
+
+def _stat_row_cells(stats: dict[str, str], names: list[str]) -> list[str]:
+    return [stats.get(name, "-") for name in names]
+
+
+def render_player_stats(result: PlayerStatsResult, league: League, tz: ZoneInfo) -> str:
+    if not result.resolved or result.player is None:
+        lines = _unresolved_block(league, result.candidates, result.note)
+        return "\n".join(lines)
+    lines = [f"{_header(result.player, league)} | {freshness(result.meta, tz)}"]
+    for block in result.blocks or []:
+        lines.append(f"{block.label} stats")
+        lines.extend(_stat_block_lines(block))
+    if result.note:
+        lines.append(result.note)
+    return "\n".join(lines)
+
+
+def _stat_block_lines(block: PlayerStatBlock) -> list[str]:
+    lines: list[str] = []
+    if not block.categories:
+        lines.append("  no stats recorded")
+    for category in block.categories:
+        names = [c.name for c in category.columns]
+        columns = [("", "Season"), ("", "Team")] + [("", c.label) for c in category.columns]
+        rows = [
+            [row.season_label, row.team or "-"] + _stat_row_cells(row.stats, names)
+            for row in category.rows
+        ]
+        if category.career is not None:
+            rows.append(["ESPN career", ""] + _stat_row_cells(category.career, names))
+        lines.append(f"[{category.label}]")
+        lines.extend(_table(columns, rows))
+    return lines
+
+
+def _log_columns(result: PlayerGameLogResult) -> list[tuple[str, str]]:
+    keys = [("", "Wk"), ("", "Date"), ("", "Opp"), ("", "Res")]
+    return keys + [(c.group or "", c.label) for c in result.columns or []]
+
+
+def _game_cells(game: GameLogRow, result: PlayerGameLogResult) -> list[str]:
+    date = "-"
+    if game.date:
+        moment = game.date
+        date = f"{moment[5:7]}/{moment[8:10]}"
+    week = str(game.week) if game.week is not None else _short_round(game.round)
+    opponent = f"{'vs ' if game.home_away == 'home' else '@'}{game.opponent or '?'}"
+    result_text = f"{game.result} {game.score}" if game.result and game.score else game.result
+    cells = [week, date, opponent, result_text or "-"]
+    for column in result.columns or []:
+        if column.season_to_date:
+            cells.append("-")
+        else:
+            cells.append(game.stats.get(column.key, "-"))
+    return cells
+
+
+ROUND_WIDTH: Final = 12
+
+
+def _short_round(label: str | None) -> str:
+    """Playoff round label, shortened so one long ESPN note does not widen the whole table (m7)."""
+    if not label:
+        return ""
+    return label if len(label) <= ROUND_WIDTH else label[: ROUND_WIDTH - 1] + "."
+
+
+def _season_heading(season: SeasonLog) -> str:
+    """Block title; says how the totals were computed (m5, M1)."""
+    if season.games_omitted:
+        return (
+            f"{season.label} ({season.game_count} games; {season.games_omitted} oldest rows not "
+            f"listed; totals computed from all {season.game_count} games)"
+        )
+    return f"{season.label} ({season.game_count} games; totals computed from listed games)"
+
+
+def _log_totals_cells(totals: dict[str, str], result: PlayerGameLogResult) -> list[str]:
+    cells = ["", "Total", "", ""]
+    for column in result.columns or []:
+        cells.append(totals.get(column.key, "-"))
+    return cells
+
+
+def _season_lines(season: SeasonLog, result: PlayerGameLogResult) -> list[str]:
+    lines = [_season_heading(season)]
+    # Totals first: a long season may be cut by the size cap, and its totals must survive.
+    rows = [_log_totals_cells(season.totals, result)]
+    rows.extend(_game_cells(g, result) for g in season.games)
+    lines.extend(_table(_log_columns(result), rows))
+    return lines
+
+
+def _career_lines(career: CareerLog, result: PlayerGameLogResult) -> list[str]:
+    years = career.seasons
+    span = f"{min(years)}-{max(years)}" if len(years) > 1 else str(years[0])
+    head = (
+        f"Career, {career.season_type} season(s) {span} "
+        f"({career.game_count} games, computed from listed games):"
+    )
+    rows = [_log_totals_cells(career.totals, result)]
+    rows[0][1] = "Career"
+    return [head, *_table(_log_columns(result), rows)]
+
+
+def render_player_gamelog(result: PlayerGameLogResult, league: League, tz: ZoneInfo) -> str:
+    if not result.resolved or result.player is None:
+        return "\n".join(_unresolved_block(league, result.candidates, result.note))
+    lines = [
+        f"{_header(result.player, league)} | {result.season} | {result.game_count} games | "
+        f"{freshness(result.meta, tz)}"
+    ]
+    if result.note:  # first, so the size cap can never cut the explanation (M1)
+        lines.append(result.note)
+    for season in result.seasons or []:
+        lines.extend(_season_lines(season, result))
+    for career in result.career or []:
+        lines.extend(_career_lines(career, result))
+    if result.seasons or result.career:
+        lines.append(PLAYER_FOOTNOTE)
+    return "\n".join(lines)
+
+
+DEFAULT_NOTICE: Final = (
+    "\n[output truncated to fit the size cap; ask for less (smaller top_n / detail / limit)]"
+)
+GAMELOG_NOTICE: Final = (
+    "\n[text cut to fit the size cap: the newest rows and any later blocks are not shown. "
+    "Ask for season=YYYY, or season_type=post for the playoffs alone.]"
+)
+
+
+def fit(text: str, limit: int, notice: str = DEFAULT_NOTICE) -> str:
     """Cap ``text`` at ``limit`` characters on a line boundary with an explicit notice."""
     if len(text) <= limit:
         return text
-    notice = (
-        "\n[output truncated to fit the size cap; ask for less (smaller top_n / detail / limit)]"
-    )
     cut = text[: max(0, limit - len(notice))]
     cut = cut[: cut.rfind("\n")] if "\n" in cut else cut
     return cut + notice

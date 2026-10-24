@@ -40,6 +40,9 @@ _ENV_NAMES = (
     "TTL_SCHEDULE_SECONDS",
     "TTL_SCHEDULE_LIVE_SECONDS",
     "TTL_NEWS_SECONDS",
+    "TTL_PLAYER_SEARCH_SECONDS",
+    "TTL_PLAYER_SECONDS",
+    "PLAYER_MAX_SEASONS",
     "CACHE_MAX_ENTRIES",
     "MCP_AUTH_TOKEN",
     "HOST",
@@ -124,7 +127,40 @@ def routes() -> dict[str, str]:
     r[f"{SITE}/soccer/eng.1/teams/359/schedule"] = "epl_schedule_ars"
     r[f"{SITE}/football/nfl/news?limit=5"] = "nfl_news"
     r[f"{SITE}/soccer/eng.1/news?limit=5"] = "epl_news"
+    _player_routes(r)
     return r
+
+
+PLAYERS = "/apis/common/v3/sports"
+SEARCH = "/apis/common/v3/search"
+
+
+def _player_routes(r: dict[str, str]) -> None:
+    """Player endpoints. Query strings are the sorted parameters the client actually sends."""
+    for query in ("skattebo", "skattebu", "skatteb", "smith"):
+        r[f"{SEARCH}?limit=50&query={query}&type=player"] = f"player_search_{query}"
+    r[f"{SEARCH}?limit=50&query=Cam+Skattebu&type=player"] = "player_search_cam_skattebu"
+    r[f"{SEARCH}?limit=50&query=Cam+Skatteb&type=player"] = "player_search_cam_skatteb"
+    r[f"{PLAYERS}/football/nfl/athletes/4696981"] = "player_profile_nfl_skattebo"
+    r[f"{PLAYERS}/basketball/nba/athletes/1966"] = "player_profile_nba_lebron"
+    skat = f"{PLAYERS}/football/nfl/athletes/4696981"
+    r[f"{skat}/gamelog?season=2025"] = "player_gl_nfl_skattebo_2025"
+    r[f"{skat}/gamelog"] = "player_gl_nfl_skattebo_2026"
+    r[f"{skat}/gamelog?season=2026"] = "player_gl_nfl_skattebo_2026"
+    r[f"{skat}/gamelog?season=2015"] = "player_gl_nfl_skattebo_2015"
+    r[f"{skat}/stats"] = "player_stats_nfl_skattebo"
+    dar = f"{PLAYERS}/football/nfl/athletes/3912547"
+    r[f"{dar}/gamelog?season=2025"] = "player_gl_nfl_darnold_2025"
+    r[f"{dar}/stats"] = "player_stats_nfl_darnold"
+    r[f"{dar}/stats?seasontype=3"] = "player_stats_nfl_darnold_post"
+    r[f"{PLAYERS}/football/nfl/athletes/4431452/gamelog?season=2025"] = "player_gl_nfl_maye_2025"
+    r[f"{PLAYERS}/football/nfl/athletes/2574056/gamelog?season=2025"] = "player_gl_nfl_byard_2025"
+    r[f"{PLAYERS}/football/nfl/athletes/16800/gamelog?season=2025"] = "player_gl_nfl_adams_2025"
+    r[f"{PLAYERS}/football/nfl/athletes/16800/stats"] = "player_stats_nfl_adams"
+    r[f"{PLAYERS}/basketball/nba/athletes/1966/gamelog?season=2025"] = "player_gl_nba_lebron_2025"
+    r[f"{PLAYERS}/basketball/nba/athletes/1966/stats"] = "player_stats_nba_lebron"
+    r[f"{PLAYERS}/baseball/mlb/athletes/33192/gamelog?season=2025"] = "player_gl_mlb_judge_2025"
+    r[f"{PLAYERS}/baseball/mlb/athletes/39832/stats"] = "player_stats_mlb_ohtani"
 
 
 def make_buf_game_live(name: str, data: dict[str, Any]) -> dict[str, Any]:
