@@ -53,7 +53,7 @@ from gmail_mcp.models import (
 )
 from gmail_mcp.resources import auth_guide, limits_guide, search_guide
 from gmail_mcp.security import HEALTH_PATH, BearerAuthMiddleware, HostGuardMiddleware
-from gmail_mcp.signin import SignInService
+from gmail_mcp.signin import PendingStore, SignInService
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,22 @@ _DESC_AUTH_STATUS: Final = (
     "Report whether Gmail sign-in is in place, the granted and missing scopes, the token age, "
     "any recent rejection and the exact next step. Read-only: it never contacts Gmail or "
     "Google, never returns credentials, and is safe to call when not signed in."
+)
+
+_DESC_RES_AUTH_STATUS: Final = (
+    "Current Gmail sign-in state as JSON (the auth_status payload), including ready_to_retry, "
+    "checked_at and any sign-in in progress."
+)
+_DESC_RES_AUTH_GUIDE: Final = (
+    "Ordered sign-in procedure for agents: who opens the sign-in page, what never to do on it, "
+    "and when to retry the failed tool."
+)
+_DESC_RES_SEARCH_GUIDE: Final = (
+    "Gmail search syntax accepted by search_threads, with operators and examples."
+)
+_DESC_RES_LIMITS_GUIDE: Final = (
+    "Server capabilities, the read-only and draft-only limits, output caps and the rule that "
+    "email content is untrusted."
 )
 
 READ_ONLY: Final = ToolAnnotations(
@@ -176,23 +192,29 @@ def _instrumented(
     return decorator
 
 
-def _register_resources(server: MCPServer, settings: Settings, gmail: GmailClient) -> None:
+def _register_resources(
+    server: MCPServer, settings: Settings, gmail: GmailClient, pending: PendingStore
+) -> None:
     """Serve the four static resources (R3). Content is server-authored text only."""
 
     @server.resource(
         "gmail://auth/status",
         name="auth-status",
         title="Gmail sign-in status",
+        description=_DESC_RES_AUTH_STATUS,
         mime_type="application/json",
         annotations=Annotations(audience=["user", "assistant"], priority=0.9),
     )
     def auth_status_resource() -> str:
-        return compute_auth_status(settings, gmail.rejected_at).model_dump_json()
+        return compute_auth_status(
+            settings, gmail.rejected_at, pending.has_pending()
+        ).model_dump_json()
 
     @server.resource(
         "gmail://guide/auth",
         name="auth-guide",
         title="How to sign in to Gmail",
+        description=_DESC_RES_AUTH_GUIDE,
         mime_type="text/markdown",
         annotations=Annotations(audience=["user", "assistant"], priority=0.8),
     )
@@ -203,6 +225,7 @@ def _register_resources(server: MCPServer, settings: Settings, gmail: GmailClien
         "gmail://guide/search",
         name="search-guide",
         title="Gmail search syntax cheat sheet",
+        description=_DESC_RES_SEARCH_GUIDE,
         mime_type="text/markdown",
         annotations=Annotations(audience=["assistant"], priority=0.5),
     )
@@ -213,6 +236,7 @@ def _register_resources(server: MCPServer, settings: Settings, gmail: GmailClien
         "gmail://guide/limits",
         name="limits-guide",
         title="Capabilities, limits and safety",
+        description=_DESC_RES_LIMITS_GUIDE,
         mime_type="text/markdown",
         annotations=Annotations(audience=["assistant"], priority=0.6),
     )
@@ -220,18 +244,24 @@ def _register_resources(server: MCPServer, settings: Settings, gmail: GmailClien
         return limits_guide(settings.max_results_cap, settings.max_body_chars)
 
 
-def create_server(settings: Settings, client: GmailClient | None = None) -> MCPServer:
+def create_server(
+    settings: Settings,
+    client: GmailClient | None = None,
+    pending: PendingStore | None = None,
+) -> MCPServer:
     """Build the MCP server with exactly the seven permitted tools and the auth resources.
 
     Args:
         settings: validated configuration.
         client: Gmail client; defaults to one backed by the stored refresh token.
+        pending: the sign-in attempts store shared with ``/auth``; a fresh empty one by default.
     """
     gmail = client or GmailClient(lambda: build_service(settings))
+    store = pending if pending is not None else PendingStore()
     cap = settings.max_results_cap
     body_limit = settings.max_body_chars
     server = MCPServer(SERVER_NAME, instructions=INSTRUCTIONS, version=__version__)
-    _register_resources(server, settings, gmail)
+    _register_resources(server, settings, gmail, store)
 
     @server.tool(name="search_threads", annotations=READ_ONLY, description=_DESC_SEARCH_THREADS)
     @_instrumented("search_threads", settings)
@@ -331,7 +361,9 @@ def create_server(settings: Settings, client: GmailClient | None = None) -> MCPS
     @_instrumented("auth_status", settings)
     async def auth_status() -> AuthStatus:
         """Gmail sign-in state, granted and missing scopes, token age and the next step."""
-        status = await asyncio.to_thread(compute_auth_status, settings, gmail.rejected_at)
+        status = await asyncio.to_thread(
+            compute_auth_status, settings, gmail.rejected_at, store.has_pending()
+        )
         # R2.3 (A1, D8): the text block is the full JSON of the same payload as structuredContent.
         # The SDK validates structured content against the AuthStatus output schema.
         return cast(
@@ -359,7 +391,8 @@ def create_app(settings: Settings, client: GmailClient | None = None) -> Starlet
     register_secret(settings.mcp_auth_token.get_secret_value())
     register_secret(settings.google_client_secret.get_secret_value())
     gmail = client or GmailClient(lambda: build_service(settings))
-    server = create_server(settings, gmail)
+    store = PendingStore()
+    server = create_server(settings, gmail, store)
     app = server.streamable_http_app(
         stateless_http=True,
         json_response=True,
@@ -372,7 +405,7 @@ def create_app(settings: Settings, client: GmailClient | None = None) -> Starlet
         host=settings.host,
     )
     app.add_route(HEALTH_PATH, healthz, methods=["GET"])
-    app.router.routes.extend(SignInService(settings, gmail.reset).routes())
+    app.router.routes.extend(SignInService(settings, gmail.reset, store).routes())
     # Last added is outermost: Host guard runs first, then bearer auth.
     app.add_middleware(BearerAuthMiddleware, token=settings.mcp_auth_token.get_secret_value())
     app.add_middleware(HostGuardMiddleware)

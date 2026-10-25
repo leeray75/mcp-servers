@@ -6,9 +6,11 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 from mcp import Client
 from mcp.shared.exceptions import MCPError
+from starlette.applications import Starlette
 
 from gmail_mcp.auth import write_token
 from gmail_mcp.auth_state import compute_auth_status
@@ -16,6 +18,7 @@ from gmail_mcp.config import SCOPE_COMPOSE, SCOPE_READONLY, Settings
 from gmail_mcp.errors import auth_url
 from gmail_mcp.gmail_client import GmailClient
 from gmail_mcp.server import create_app, create_server
+from gmail_mcp.signin import PendingStore, SignInService
 from tests.conftest import FAKE_REFRESH_TOKEN, FakeGmail
 from tests.test_server import bearer, serve
 
@@ -64,9 +67,15 @@ async def test_auth_status_annotations_title_and_output_schema(settings: Setting
     assert tool.annotations.idempotent_hint is True
     assert tool.annotations.open_world_hint is False
     assert tool.output_schema is not None
-    assert {"state", "signed_in", "warnings", "open_commands"} <= set(
-        tool.output_schema["properties"]
-    )
+    assert {
+        "state",
+        "signed_in",
+        "ready_to_retry",
+        "checked_at",
+        "warnings",
+        "open_commands",
+    } <= set(tool.output_schema["properties"])
+    assert "sign_in_in_progress" in str(tool.output_schema)
     assert "read-only" in (tool.description or "").lower()
     assert "never" in (tool.description or "").lower()
 
@@ -137,7 +146,11 @@ async def test_status_resource_equals_the_auth_status_payload(settings: Settings
     async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
         read = await client.read_resource("gmail://auth/status")
     body = read.contents[0].text  # type: ignore[union-attr]
-    assert json.loads(body) == json.loads(compute_auth_status(settings, None).model_dump_json())
+    # checked_at is recomputed on every read (R3.1), so compare everything else.
+    resource_payload = json.loads(body)
+    direct = json.loads(compute_auth_status(settings, None).model_dump_json())
+    assert resource_payload.pop("checked_at") <= direct.pop("checked_at")
+    assert resource_payload == direct
 
 
 async def test_auth_guide_contains_the_ordered_procedure(settings: Settings) -> None:
@@ -149,7 +162,7 @@ async def test_auth_guide_contains_the_ordered_procedure(settings: Settings) -> 
         "Start-Process",
         'open "',
         'xdg-open "',
-        "Do NOT try to complete the Google consent yourself",
+        "and never complete the",
         "7 days",
         "Testing",
     ):
@@ -221,3 +234,62 @@ async def test_resources_are_served_through_the_guarded_mcp_route(settings: Sett
         )
     assert response.status_code == 200
     assert "gmail://auth/status" in response.text
+
+
+# ------------------------------------------------- R1-R6: hardening (agent-auth-hardening)
+
+
+async def test_every_resource_has_a_one_sentence_description(settings: Settings) -> None:
+    async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
+        resources = (await client.list_resources()).resources
+    assert len(resources) == 4
+    for resource in resources:
+        description = resource.description or ""
+        assert description
+        assert description.endswith(".")
+        assert "\n" not in description
+
+
+async def test_auth_guide_states_the_guardrails_and_the_new_fields(settings: Settings) -> None:
+    async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
+        guide = (await client.read_resource("gmail://guide/auth")).contents[0].text  # type: ignore[union-attr]
+    for phrase in (
+        "Who opens the page",
+        "shell: Windows",
+        "copy and paste",
+        "Do NOT use browser-automation tools",
+        "Never type, capture or ask for a password",
+        "ready_to_retry",
+        "checked_at",
+        "sign_in_in_progress",
+    ):
+        assert phrase in guide
+
+
+async def test_auth_then_auth_status_reports_sign_in_in_progress(settings: Settings) -> None:
+    """R5: a sign-in page opened over /auth is visible to auth_status and the status resource."""
+    store = PendingStore()
+    service = SignInService(settings, lambda: None, store)
+    transport = httpx.ASGITransport(app=Starlette(routes=service.routes()))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as http:
+        assert (await http.get("/auth")).status_code == 302
+    server = create_server(settings, _as_client(FakeGmail()), store)
+    async with Client(server) as client:
+        result = await client.call_tool("auth_status", {})
+        resource = await client.read_resource("gmail://auth/status")
+    assert result.structured_content["state"] == "sign_in_in_progress"
+    assert result.structured_content["ready_to_retry"] is False
+    assert result.structured_content["signed_in"] is False
+    assert "checked_at" in result.structured_content
+    body = json.loads(resource.contents[0].text)  # type: ignore[union-attr]
+    assert body["state"] == "sign_in_in_progress"
+
+
+async def test_pending_attempt_does_not_hide_a_signed_in_token(settings: Settings) -> None:
+    _token(settings, [SCOPE_READONLY, SCOPE_COMPOSE])
+    store = PendingStore()
+    store.add("some-state", "verifier", "http://127.0.0.1:8765/oauth2callback")
+    async with Client(create_server(settings, _as_client(FakeGmail()), store)) as client:
+        result = await client.call_tool("auth_status", {})
+    assert result.structured_content["state"] == "signed_in"
+    assert result.structured_content["ready_to_retry"] is True

@@ -16,20 +16,32 @@ def auth_guide(host_port: int) -> str:
 
 Use this when a Gmail tool answers AUTH_REQUIRED, or `auth_status` shows `signed_in` as false.
 
-1. Call `auth_status`. Read `state`, `warnings` and `next_step`.
-2. Open `sign_in_url` ({url}) in the user's browser with the command for their operating
-   system from `open_commands`:
-   - Windows: `Start-Process "{url}"`
-   - macOS: `open "{url}"`
-   - Linux: `xdg-open "{url}"`
-   If the client supports URL elicitation, it may offer to open the page instead.
-3. Ask the user to approve access in the browser. The page then says "Gmail is connected".
-4. Call `auth_status` again. When `signed_in` is true, retry the tool that failed.
+1. Call `auth_status`. Read `state`, `ready_to_retry`, `checked_at`, `warnings` and `next_step`.
+2. Hand the sign-in to the user. Who opens the page:
+   - If the client offers URL elicitation, it may open the page for the user.
+   - Otherwise run the command for the user's operating system from `open_commands` in a
+     shell: Windows `Start-Process "{url}"`, macOS `open "{url}"`, Linux `xdg-open "{url}"`.
+   - If you cannot run a shell command, give the user `sign_in_url` ({url}) to copy and paste
+     into their own browser.
+3. Ask the user to approve access in that browser. The page then says "Gmail is connected".
+4. Call `auth_status` again. Retry the failing tool only when `ready_to_retry` is true
+   (it is true exactly when `state` is `signed_in`).
+
+The states you may see:
+- `sign_in_in_progress`: a sign-in page was opened and has not finished. Wait for the user to
+  finish approving access, then call `auth_status`. `ready_to_retry` is false until then.
+- `not_signed_in`, `token_unreadable`, `scopes_insufficient`, `rejected`: follow steps 2 to 4.
+- `signed_in`: no action needed; `ready_to_retry` is true.
+
+`checked_at` is the UTC time the status was computed. Every call and every read of
+`gmail://auth/status` recomputes it, so use it to judge how fresh a result is.
 
 Rules:
-- Do NOT try to complete the Google consent yourself. Never ask the user for a password,
-  a code or any token.
-- Do not retry the failing tool before sign-in is complete.
+- Do NOT use browser-automation tools (DevTools, Playwright, Selenium or similar) on the
+  sign-in page. The user approves access in their own browser.
+- Never type, capture or ask for a password, a code or any token, and never complete the
+  Google consent yourself.
+- Do not retry the failing tool before `ready_to_retry` is true.
 - The sign-in URL is this server's own `/auth` page. It carries no credentials and no user data.
 
 Why sign-in is sometimes needed again: Google expires refresh tokens 7 days after sign-in

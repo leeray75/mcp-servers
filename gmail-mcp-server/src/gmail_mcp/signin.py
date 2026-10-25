@@ -151,6 +151,12 @@ class PendingStore:
             self._purge()
             return self._items.pop(state, None)
 
+    def has_pending(self) -> bool:
+        """True while any unexpired attempt exists (read-only apart from the expiry purge)."""
+        with self._lock:
+            self._purge()
+            return bool(self._items)
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._items)

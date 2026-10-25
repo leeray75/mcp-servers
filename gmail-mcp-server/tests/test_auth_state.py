@@ -122,14 +122,110 @@ def test_expiry_warning_at_six_days(settings: Settings) -> None:
     assert "In production" in status.warnings[0]
 
 
-def test_next_step_for_each_problem_state_is_one_sentence_with_the_link(
-    settings: Settings,
-) -> None:
+def test_next_step_for_each_problem_state_carries_the_guardrails(settings: Settings) -> None:
     status = compute_auth_status(settings, None)
     assert status.state == "not_signed_in"
-    assert status.next_step.startswith("Ask the user to open ")
-    assert status.next_step.endswith("then call auth_status and retry.")
-    assert f"{auth_url(settings.host_port)} " in status.next_step
+    assert status.next_step.startswith("Open the sign-in page for the user:")
+    assert "run the open command for their operating system from open_commands in a shell" in (
+        status.next_step
+    )
+    assert f"{auth_url(settings.host_port)} " in status.next_step  # copy-and-paste link
+    assert "Do not use browser-automation tools" in status.next_step
+    assert "never type or capture credentials" in status.next_step
+    assert status.next_step.endswith("retry only when it reports ready_to_retry: true.")
+
+
+def _set_problem(settings: Settings, scenario: str) -> dt.datetime | None:
+    """Put the store into one problem state; returns the rejection time when one applies."""
+    path = Path(settings.token_path)
+    if scenario == "missing":
+        return None
+    if scenario == "unreadable":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{", encoding="utf-8")
+        return None
+    if scenario == "scope_short":
+        write_token(path, FAKE_REFRESH_TOKEN, [SCOPE_READONLY])
+        return None
+    _signed_in_token(settings)  # rejected
+    return _rejection()
+
+
+PROBLEM_SCENARIOS = ["missing", "unreadable", "scope_short", "rejected"]
+
+
+@pytest.mark.parametrize("scenario", PROBLEM_SCENARIOS)
+def test_ready_to_retry_is_true_only_when_signed_in(settings: Settings, scenario: str) -> None:
+    rejection = _set_problem(settings, scenario)
+    status = compute_auth_status(settings, rejection)
+    assert status.ready_to_retry is False
+    assert status.signed_in is False
+
+
+def test_ready_to_retry_is_true_when_signed_in(settings: Settings) -> None:
+    _signed_in_token(settings)
+    status = compute_auth_status(settings, None)
+    assert status.state == "signed_in"
+    assert status.ready_to_retry is True
+
+
+def test_checked_at_is_a_recent_utc_timestamp_on_every_call(settings: Settings) -> None:
+    before = dt.datetime.now(dt.UTC)
+    status = compute_auth_status(settings, None)
+    parsed = dt.datetime.fromisoformat(status.checked_at)
+    assert parsed.utcoffset() == dt.timedelta(0)
+    assert before - dt.timedelta(seconds=1) <= parsed <= dt.datetime.now(dt.UTC)
+
+
+@pytest.mark.parametrize("scenario", PROBLEM_SCENARIOS)
+def test_pending_sign_in_replaces_every_problem_state(settings: Settings, scenario: str) -> None:
+    rejection = _set_problem(settings, scenario)
+    status = compute_auth_status(settings, rejection, sign_in_pending=True)
+    assert status.state == "sign_in_in_progress"
+    assert status.signed_in is False
+    assert status.ready_to_retry is False
+    assert status.next_step.startswith("A sign-in is already open.")
+    assert "ready_to_retry stays false until state is signed_in" in status.next_step
+
+
+def test_pending_sign_in_keeps_the_rejection_time_and_its_warning(settings: Settings) -> None:
+    rejection = _set_problem(settings, "rejected")
+    status = compute_auth_status(settings, rejection, sign_in_pending=True)
+    assert status.state == "sign_in_in_progress"
+    assert rejection is not None
+    assert status.rejected_at == rejection.isoformat()
+    assert any("password change" in w for w in status.warnings)
+
+
+def test_pending_sign_in_never_changes_a_signed_in_status(settings: Settings) -> None:
+    _signed_in_token(settings)
+    status = compute_auth_status(settings, None, sign_in_pending=True)
+    assert status.state == "signed_in"
+    assert status.signed_in is True
+    assert status.ready_to_retry is True
+    assert status.next_step == "No action needed."
+
+
+def test_status_fields_are_exact_and_pending_adds_no_detail(settings: Settings) -> None:
+    expected = {
+        "state",
+        "signed_in",
+        "ready_to_retry",
+        "checked_at",
+        "sign_in_url",
+        "scopes_granted",
+        "scopes_missing",
+        "token_age_days",
+        "rejected_at",
+        "warnings",
+        "next_step",
+        "open_commands",
+    }
+    status = compute_auth_status(settings, None, sign_in_pending=True)
+    assert set(status.model_dump()) == expected
+    dumped = status.model_dump_json()
+    for secret in SECRETS:
+        assert secret not in dumped
 
 
 def test_open_commands_are_built_from_the_sign_in_url(settings: Settings) -> None:
