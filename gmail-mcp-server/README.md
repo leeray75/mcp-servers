@@ -146,11 +146,17 @@ How the sign-in is offered:
   page: it carries no query, state or user data, and the Google consent happens in your
   browser, never inside the MCP client. Set `AUTH_URL_ELICITATION=false` to turn this off.
 - **Fallback.** Every other client receives the `AUTH_REQUIRED` tool error with the link and the
-  OS open commands (`Start-Process`, `open`, `xdg-open`). An agent should call `auth_status`,
-  open the link, wait for you to approve, call `auth_status` again and then retry.
+  OS open commands (`Start-Process`, `open`, `xdg-open`). An agent runs the open command in a
+  shell, or gives you the link to copy and paste into your own browser, waits for you to approve,
+  calls `auth_status` and retries only when it reports `ready_to_retry: true`.
+- **Guardrails.** The agent is told never to use browser-automation tools (DevTools, Playwright,
+  Selenium) on the Google sign-in page and never to type or capture credentials. These are
+  instructions in the text, not enforcement; you approve access in your own browser.
 - **`auth_status`** tells you the state (`signed_in`, `not_signed_in`, `token_unreadable`,
-  `scopes_insufficient` or `rejected`), the scopes, the token age, any warnings and the next step.
-  The `gmail://auth/status` resource carries the same information.
+  `scopes_insufficient`, `rejected` or `sign_in_in_progress`), `ready_to_retry` (true only when
+  `signed_in`), `checked_at` (the UTC time the status was computed), the scopes, the token age,
+  any warnings and the next step. `sign_in_in_progress` means a sign-in page was opened and has not
+  finished yet. The `gmail://auth/status` resource carries the same information.
 
 Alternatively run `scripts/auth.ps1` (Windows) or
 `scripts/auth.sh` (WSL): with the server running it opens the same page and waits until the

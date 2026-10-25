@@ -31,7 +31,15 @@ All notable changes to this project are documented here. The format follows
   `elicitation.url` on the request (`InputRequiredResult`, `mode: "url"`), with the plain `/auth`
   URL only. Earlier revisions get the `AUTH_REQUIRED` text. Controlled by `AUTH_URL_ELICITATION` (default `true`).
 - Stable `AUTH_REQUIRED` tool-error text for sign-in failures: the reason, the bare sign-in link,
-  the OS open commands and the instruction to call `auth_status` and retry. No `scripts/auth.*`.
+  the OS open commands, the copy-and-paste link for the user's own browser, the ban on
+  browser-automation tools and credential entry, and the instruction to retry only when
+  `ready_to_retry` is true. No `scripts/auth.*`.
+- Agent guardrails in `gmail://guide/auth`: who opens the sign-in page (shell open command, else
+  copy and paste), no browser-automation tools on it, and never type or capture credentials.
+- `auth_status` fields `ready_to_retry` (true only when `signed_in`) and `checked_at` (UTC time of
+  each computation), and the state `sign_in_in_progress` for an unexpired pending sign-in
+  attempt (no state value, verifier or timing is exposed).
+- Descriptions for all four MCP resources (listed by `resources/list`).
 - README section on publishing the OAuth consent screen to *In production* (ends the 7-day
   Testing-mode refresh-token expiry), and on how sign-in is offered.
 

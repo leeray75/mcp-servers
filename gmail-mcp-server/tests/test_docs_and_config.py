@@ -66,3 +66,28 @@ def test_changelog_records_the_additions() -> None:
     unreleased = text.split("## [Unreleased]", 1)[1].split("## [", 1)[0]
     for phrase in ("auth_status", "gmail://", "AUTH_URL_ELICITATION"):
         assert phrase in unreleased
+
+
+HARDENING_FIELDS = ("ready_to_retry", "checked_at", "sign_in_in_progress")
+
+
+def test_readme_documents_the_guardrails_and_fields() -> None:
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    for phrase in (*HARDENING_FIELDS, "browser-automation", "copy and paste"):
+        assert phrase in text
+
+
+def test_changelog_records_the_hardening() -> None:
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = text.split("## [Unreleased]", 1)[1].split("## [", 1)[0]
+    for phrase in (*HARDENING_FIELDS, "browser-automation"):
+        assert phrase in unreleased
+
+
+def test_spec_and_claude_md_document_the_hardening() -> None:
+    spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    for phrase in HARDENING_FIELDS:
+        assert phrase in spec
+        assert phrase in claude
+    assert "description" in claude

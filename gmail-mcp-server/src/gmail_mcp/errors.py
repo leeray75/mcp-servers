@@ -25,9 +25,12 @@ def auth_required_message(reason: str, host_port: int = DEFAULT_HOST_PORT) -> st
     url = auth_url(host_port)
     return (
         f"AUTH_REQUIRED: {reason}\n"
-        f"Do not retry yet. Ask the user to sign in: open {url} in their browser\n"
+        "Do not retry yet. Sign-in is needed: run the open command for the user's OS in a shell\n"
         f'(Windows: Start-Process "{url}"; macOS: open "{url}"; Linux: xdg-open "{url}"),\n'
-        "have them approve access, then call auth_status and retry."
+        f"or give the user this link to copy into their browser: {url} and have them approve.\n"
+        "Never use browser automation (DevTools, Playwright, Selenium) on that page;\n"
+        "never type or capture credentials. After the user finishes, call auth_status and\n"
+        "retry only when it reports ready_to_retry: true."
     )
 
 

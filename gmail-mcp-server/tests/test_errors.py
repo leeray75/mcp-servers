@@ -29,7 +29,21 @@ def test_auth_required_text_follows_the_contract(reason: str, label: str, port: 
     assert f'open "{url}"' in text
     assert f'xdg-open "{url}"' in text
     assert "Do not retry yet." in text
-    assert "call auth_status and retry." in text
+    # R1 (a): shell open command, or the copy-and-paste link for the user's own browser.
+    assert "run the open command for the user's OS in a shell" in text
+    assert "give the user this link to copy into their browser" in text
+    # R1 (b), (c): no browser automation on the page; never type or capture credentials.
+    assert "Never use browser automation (DevTools, Playwright, Selenium) on that page" in text
+    assert "never type or" in text and "capture credentials" in text
+    # R1 (d): retry gate is ready_to_retry, not a bare "retry".
+    assert "retry only when it" in text and "ready_to_retry: true." in text
+    assert "call auth_status and retry." not in text
+
+
+def test_auth_required_text_mentions_no_scripts_and_one_bare_url_at_default_port() -> None:
+    text = AuthRequiredError(REJECTED_REASON).user_message()
+    assert auth_url() + " " in text
+    assert text.count(auth_url() + " ") == 1
 
 
 def test_url_is_built_from_host_port_not_a_constant() -> None:

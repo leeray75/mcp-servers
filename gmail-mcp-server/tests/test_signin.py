@@ -480,6 +480,35 @@ async def test_expired_state_is_rejected_over_http(
     assert not _token_exists(settings)
 
 
+def test_has_pending_is_false_when_empty() -> None:
+    assert PendingStore(clock=Clock()).has_pending() is False
+
+
+def test_has_pending_is_true_for_a_fresh_attempt_and_false_once_consumed() -> None:
+    store = PendingStore(clock=Clock())
+    store.add("a", "v", "r")
+    assert store.has_pending() is True
+    assert store.pop("a") is not None
+    assert store.has_pending() is False
+
+
+def test_has_pending_purges_expired_attempts() -> None:
+    clock = Clock()
+    store = PendingStore(clock=clock)
+    store.add("a", "v", "r")
+    clock.now += 601
+    assert store.has_pending() is False
+    assert len(store) == 0
+
+
+def test_has_pending_does_not_consume_the_attempt() -> None:
+    store = PendingStore(clock=Clock())
+    store.add("a", "v", "r")
+    assert store.has_pending() is True
+    assert store.has_pending() is True
+    assert store.pop("a") is not None
+
+
 # ------------------------------------------------------------- error hint
 
 
