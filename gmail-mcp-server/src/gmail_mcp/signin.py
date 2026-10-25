@@ -51,7 +51,7 @@ _PAGES: Final[dict[str, tuple[int, str, str]]] = {
     "succeeded": (
         200,
         "Gmail is connected",
-        "<p>Gmail is connected. You can close this tab and return to Goose.</p>",
+        "<p>Gmail is connected. You can close this tab and return to your assistant.</p>",
     ),
     "denied": (400, "Sign-in cancelled", "<p>Access was not granted.</p>" + _RETRY),
     "bad_state": (

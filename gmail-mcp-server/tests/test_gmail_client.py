@@ -10,7 +10,7 @@ from googleapiclient.errors import HttpError
 
 from gmail_mcp.auth import write_token
 from gmail_mcp.config import SCOPE_COMPOSE, SCOPE_READONLY, Settings
-from gmail_mcp.errors import AUTH_HINT, AuthRequiredError, GmailApiError
+from gmail_mcp.errors import AuthRequiredError, GmailApiError
 from gmail_mcp.gmail_client import GmailClient, build_service, map_http_error
 from tests.conftest import FAKE_REFRESH_TOKEN
 
@@ -54,7 +54,7 @@ def test_map_http_error_unknown_status() -> None:
 def test_map_http_error_401_is_auth_required() -> None:
     mapped = map_http_error(http_error(401))
     assert isinstance(mapped, AuthRequiredError)
-    assert AUTH_HINT in str(mapped)
+    assert "AUTH_REQUIRED:" in mapped.user_message()
 
 
 async def test_success_returns_payload_and_reuses_service() -> None:
@@ -100,12 +100,12 @@ async def test_refresh_error_maps_to_auth_required_without_leaking() -> None:
         await client.list_labels()
     assert "invalid_grant" not in str(info.value)
     assert "ya29" not in str(info.value)
-    assert AUTH_HINT in str(info.value)
+    assert "AUTH_REQUIRED:" in info.value.user_message()
 
 
 async def test_missing_token_is_actionable_not_a_crash(settings: Settings) -> None:
     client = GmailClient(lambda: build_service(settings))
-    with pytest.raises(AuthRequiredError, match="auth"):
+    with pytest.raises(AuthRequiredError, match="No Google token found"):
         await client.list_labels()
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LOG_LEVEL",
         "MAX_RESULTS_CAP",
         "MAX_BODY_CHARS",
+        "AUTH_URL_ELICITATION",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -102,6 +104,7 @@ class FakeGmail:
         self.created: list[tuple[str, str | None]] = []
         self.calls: list[tuple[Any, ...]] = []
         self.resets = 0
+        self.rejected_at: datetime | None = None
 
     def reset(self) -> None:
         self.resets += 1

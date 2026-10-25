@@ -8,7 +8,7 @@ drafts - and nothing else.**
   MCP code ever touches your OAuth tokens or mail.
 - Streamable HTTP transport, published on **127.0.0.1 only**, behind a bearer token.
 - **No send, delete, trash, relabel, settings or attachment-download tool exists.** A test
-  asserts the registered tool set is exactly the six below.
+  asserts the registered tool set is exactly the seven below.
 
 | Tool | What it does |
 |---|---|
@@ -18,6 +18,11 @@ drafts - and nothing else.**
 | `list_labels` | Label id, name, type |
 | `list_drafts` | Draft id, subject, recipients, snippet |
 | `create_draft` | Creates a **draft** (optionally threaded as a reply). Never sends |
+| `auth_status` | Read-only sign-in state: signed in or not, granted/missing scopes, token age, recent rejection, and the exact next step. Never contacts Google and never returns credentials |
+
+The server also publishes four read-only **resources**: `gmail://auth/status` (the same JSON as
+`auth_status`), `gmail://guide/auth` (the sign-in procedure for agents), `gmail://guide/search`
+(Gmail search syntax) and `gmail://guide/limits` (capabilities, limits and safety).
 
 ## Security model (read this first)
 
@@ -80,11 +85,16 @@ drafts - and nothing else.**
    them into `.env`; never commit them).
 
 > **Testing mode and token lifetime.** While the consent screen is in *Testing*, Google
-> expires refresh tokens after **7 days**; the tools then return an error with a sign-in
-> link (see "Re-authenticating" below) and you simply click it or re-run the auth script.
-> Moving the consent screen to *In production* removes the 7-day limit, but Gmail scopes are classed sensitive/restricted, so the app stays
-> "unverified": Google shows a warning screen (*Advanced -> Go to <app> (unsafe)*) that you can
-> click through for your own account. Verification is not needed for personal use.
+> expires refresh tokens after **7 days**. The tools then return an `AUTH_REQUIRED` error with a
+> sign-in link (see "Re-authenticating" below); `auth_status` reports the token age and warns
+> once it is 6 days old. Publishing the consent screen to *In production* prevents this expiry.
+>
+> To publish it: open *Google Auth Platform -> Audience* (or *OAuth consent screen*), choose
+> **Publish app** and confirm. Google then no longer expires the refresh token after 7 days.
+> The app stays "unverified" because Gmail scopes are classed sensitive/restricted: Google shows
+> a warning screen (*Advanced -> Go to <app> (unsafe)*) that you click through for your own
+> account. Verification is not needed for personal use. After publishing, run `auth` once so the
+> stored token is issued under the published consent screen.
 
 ## Setup
 
@@ -124,9 +134,25 @@ A running server picks up a new token after `auth` without a restart.
 ### Re-authenticating
 
 When the refresh token expires (every 7 days while the consent screen is in *Testing*) or is
-revoked, Goose's tool error contains a link such as `http://127.0.0.1:8765/auth` (it follows
-`HOST_PORT`). Click it, approve access in Google, and see "Gmail is connected"; the next tool
-call works, no restart needed. Alternatively run `scripts/auth.ps1` (Windows) or
+revoked, the failing tool returns an `AUTH_REQUIRED:` message that contains a link such as
+`http://127.0.0.1:8765/auth` (it follows `HOST_PORT`). Click it, approve access in Google, and see
+"Gmail is connected"; the next tool call works, no restart needed.
+
+How the sign-in is offered:
+
+- **URL elicitation.** A client on MCP 2026-07-28 that declares URL-mode elicitation support is
+  asked to open that same `/auth` page for you. Clients on earlier revisions (such as 2025-11-25)
+  get the `AUTH_REQUIRED` text instead, because the server cannot see their capabilities. The URL is the server's own
+  page: it carries no query, state or user data, and the Google consent happens in your
+  browser, never inside the MCP client. Set `AUTH_URL_ELICITATION=false` to turn this off.
+- **Fallback.** Every other client receives the `AUTH_REQUIRED` tool error with the link and the
+  OS open commands (`Start-Process`, `open`, `xdg-open`). An agent should call `auth_status`,
+  open the link, wait for you to approve, call `auth_status` again and then retry.
+- **`auth_status`** tells you the state (`signed_in`, `not_signed_in`, `token_unreadable`,
+  `scopes_insufficient` or `rejected`), the scopes, the token age, any warnings and the next step.
+  The `gmail://auth/status` resource carries the same information.
+
+Alternatively run `scripts/auth.ps1` (Windows) or
 `scripts/auth.sh` (WSL): with the server running it opens the same page and waits until the
 token file changes; otherwise it falls back to the one-off container and opens the Google URL.
 
@@ -173,6 +199,7 @@ at startup with a message that names the setting but never echoes secret values.
 | `MAX_RESULTS_CAP` | no | `50` | Hard ceiling for list tools |
 | `MAX_BODY_CHARS` | no | `20000` | Truncation limit for returned bodies |
 | `HOST_PORT` | no | `8765` | Host port on 127.0.0.1 (read by compose and the scripts, and by the server to build the sign-in link and OAuth redirect URI) |
+| `AUTH_URL_ELICITATION` | no | `true` | Kill switch: when `false`, sign-in is offered only as the `AUTH_REQUIRED` tool error, never as a URL elicitation |
 
 If you narrow `GMAIL_SCOPES` (for example to read-only), `create_draft` is **still listed** by the
 server but every call will fail with a Gmail 403; tools needing a missing scope behave the same.
@@ -203,7 +230,7 @@ to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at t
 |---|---|
 | `cannot reach the Docker daemon` | In Ubuntu: `sudo service docker start`; check `docker info` |
 | `.env` errors from `start` | Placeholders (`replace-me...`) or a `MCP_AUTH_TOKEN` shorter than 32 characters |
-| Tools say "Gmail is not authorised" | No token yet, token revoked, or the 7-day Testing-mode expiry - click the link in the message or run `auth` |
+| Tools return `AUTH_REQUIRED` | No token yet, token revoked, or the 7-day Testing-mode expiry - call `auth_status`, then click the link in the message or run `auth` |
 | Browser shows "This app isn't verified" | Expected for your own project: *Advanced -> Go to <app> (unsafe)*. Make sure your account is a **Test user** |
 | `Error 403: access_denied` at sign-in | Your account is not listed as a Test user on the consent screen |
 | `redirect_uri_mismatch` | The OAuth client is not of type **Desktop app** |
@@ -224,8 +251,8 @@ to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at t
 ## Project layout
 
 ```
-src/gmail_mcp/   config, logging_setup, auth, auth_cli, gmail_client, models, parsing,
-                 security, signin, server, tools, errors, __main__
+src/gmail_mcp/   config, logging_setup, auth, auth_cli, auth_state, resources, gmail_client,
+                 models, parsing, security, signin, server, tools, errors, __main__
 tests/           unit + MCP-level + HTTP-level tests (Gmail API mocked)
 scripts/         start|stop|restart|rebuild|auth|logs|status (.sh canonical, .ps1 wrappers)
 docs/            PLAN.md, SPEC.md, reauth/ (re-auth plan + spec), reports/

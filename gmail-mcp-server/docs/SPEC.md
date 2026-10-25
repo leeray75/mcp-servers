@@ -58,6 +58,7 @@ startup with a clear message that never echoes secret values.
 | `LOG_LEVEL` | no | `INFO` | |
 | `MAX_RESULTS_CAP` | no | `50` | Hard ceiling for any list tool |
 | `MAX_BODY_CHARS` | no | `20000` | Truncation limit for returned message bodies |
+| `AUTH_URL_ELICITATION` | no | `true` | Kill switch for URL-mode elicitation of the sign-in page (amendment: `docs/specs/agent-auth/SPEC.md` R5.1) |
 
 `.env.example` MUST contain placeholders only (e.g. `replace-me`), never real values.
 `.env` MUST be git-ignored and excluded from the Docker build context.
@@ -81,9 +82,13 @@ startup with a clear message that never echoes secret values.
 - Uses the stored refresh token with the Desktop OAuth client; access tokens are
   refreshed automatically and held in memory only.
 - If no token file exists or refresh fails with `invalid_grant`, tools MUST return
-  a clear, actionable MCP tool error containing the link `http://127.0.0.1:<HOST_PORT>/auth` and the script
-  fallback; the process MUST NOT crash or open a browser. After a successful sign-in the cached Gmail
-  service is reset (`GmailClient.reset()`), so no restart is needed.
+  a tool error whose text is the `AUTH_REQUIRED` contract of `docs/specs/agent-auth/SPEC.md` (R4): the reason,
+  the bare link `http://127.0.0.1:<HOST_PORT>/auth`, the per-OS open commands and the instruction to
+  call `auth_status` and retry. It MUST NOT mention `scripts/auth.*`. The process MUST NOT crash or
+  open a browser. After a successful sign-in the cached Gmail service and the recorded rejection are
+  reset (`GmailClient.reset()`), so no restart is needed.
+- A client that declares URL-mode elicitation on the request may instead be asked to open the same
+  `/auth` page (R5 of `docs/specs/agent-auth/SPEC.md`); nothing else changes.
 - Token file MUST be written atomically with mode `0600`. Never logged.
 - Requested scopes MUST be validated against the allowed set at startup.
 
@@ -142,6 +147,11 @@ echoing request bodies). Tool annotations MUST be set (`readOnlyHint` etc.).
 | `list_labels` | readOnly | — | Label id, name, type |
 | `list_drafts` | readOnly | `max_results`, `page_token` | Draft id, subject, to, snippet |
 | `create_draft` | non-readOnly, `destructiveHint=false`, `idempotentHint=false` | `to: list[email]`, `subject: str`, `body: str`, `cc?`, `bcc?`, `reply_to_message_id?` | Builds a MIME message, creates a **draft only**. If `reply_to_message_id` is set, sets `threadId`, `In-Reply-To`, `References`. Returns draft id and a Gmail URL |
+| `auth_status` | readOnly, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=false` | — | Sign-in state, scopes, token age, recorded rejection, next step. Never contacts Google, never returns credentials, never raises an auth error. Added by the amendment `docs/specs/agent-auth/SPEC.md` (R1, R2) |
+
+The tool set is the six tools above plus `auth_status`, in that order (amendment `docs/specs/agent-auth/SPEC.md`
+D3). The server also serves four static resources (`gmail://auth/status`, `gmail://guide/auth`,
+`gmail://guide/search`, `gmail://guide/limits`; amendment R3). Neither adds a mail capability.
 
 Hard exclusions — the server MUST NOT implement or expose: send, delete, trash,
 modify/relabel, filters, forwarding settings, attachment download, or any

@@ -12,7 +12,7 @@ import pytest
 from gmail_mcp import auth_cli
 from gmail_mcp.auth import build_flow, load_credentials, read_token, write_token
 from gmail_mcp.config import SCOPE_COMPOSE, SCOPE_READONLY, Settings
-from gmail_mcp.errors import AUTH_HINT, AuthRequiredError
+from gmail_mcp.errors import AuthRequiredError
 from tests.conftest import FAKE_CLIENT_ID, FAKE_REFRESH_TOKEN
 
 SCOPES = [SCOPE_READONLY, SCOPE_COMPOSE]
@@ -58,7 +58,7 @@ def test_failed_write_keeps_old_token_and_cleans_up(
 def test_read_token_missing_is_actionable(tmp_path: Path) -> None:
     with pytest.raises(AuthRequiredError) as info:
         read_token(tmp_path / "absent.json")
-    assert AUTH_HINT in str(info.value)
+    assert "AUTH_REQUIRED: No Google token found." in info.value.user_message()
 
 
 @pytest.mark.parametrize(

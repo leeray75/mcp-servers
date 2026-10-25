@@ -16,7 +16,7 @@ from mcp import Client
 from starlette.applications import Starlette
 
 from gmail_mcp.config import Settings
-from gmail_mcp.errors import AUTH_HINT, AuthRequiredError, GmailApiError
+from gmail_mcp.errors import AuthRequiredError, GmailApiError
 from gmail_mcp.gmail_client import GmailClient
 from gmail_mcp.server import create_app, create_server
 from tests.conftest import FAKE_AUTH_TOKEN, FakeGmail, make_message
@@ -28,6 +28,7 @@ EXPECTED_TOOLS = {
     "list_labels",
     "list_drafts",
     "create_draft",
+    "auth_status",
 }
 READ_ONLY_TOOLS = EXPECTED_TOOLS - {"create_draft"}
 SRC = Path(__file__).resolve().parents[1] / "src" / "gmail_mcp"
@@ -101,6 +102,7 @@ def test_gmail_client_exposes_no_mutating_call_besides_create_draft() -> None:
         "get_draft",
         "create_draft",
         "reset",
+        "rejected_at",  # read-only view of the rejection record (R1.3)
     }
 
 
@@ -136,7 +138,7 @@ async def test_missing_token_is_a_clear_tool_error_not_a_crash(settings: Setting
         result = await client.call_tool("list_labels", {})
         again = await client.call_tool("list_labels", {})  # server survived the first failure
     assert result.is_error is True
-    assert AUTH_HINT in result.content[0].text  # type: ignore[union-attr]
+    assert "AUTH_REQUIRED:" in result.content[0].text  # type: ignore[union-attr]
     assert again.is_error is True
 
 
@@ -160,7 +162,8 @@ async def test_domain_errors_are_returned_verbatim(settings: Settings) -> None:
 async def test_auth_error_is_actionable(settings: Settings) -> None:
     async with Client(create_server(settings, _as_client(_Boom(AuthRequiredError())))) as client:
         result = await client.call_tool("list_labels", {})
-    assert "scripts/auth" in result.content[0].text  # type: ignore[union-attr]
+    assert "AUTH_REQUIRED:" in result.content[0].text  # type: ignore[union-attr]
+    assert "scripts/auth" not in result.content[0].text  # type: ignore[union-attr]
 
 
 async def test_unexpected_exceptions_do_not_leak_details(

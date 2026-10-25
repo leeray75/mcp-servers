@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A minimal, self-owned MCP server (Python 3.12, official `mcp` SDK, Google client libs) giving an agent read access to Gmail plus draft creation. Streamable HTTP on 127.0.0.1 behind a bearer token, run in Docker inside WSL2. `docs/SPEC.md` is the authoritative spec; `docs/PLAN.md` and `docs/reports/` hold the build plan and review rounds. The server-hosted re-authentication feature has its own plan/spec in `docs/reauth/` and reports in `docs/reports/reauth/`.
+A minimal, self-owned MCP server (Python 3.12, official `mcp` SDK, Google client libs) giving an agent read access to Gmail plus draft creation. Streamable HTTP on 127.0.0.1 behind a bearer token, run in Docker inside WSL2. `docs/SPEC.md` is the authoritative spec; `docs/PLAN.md` and `docs/reports/` hold the build plan and review rounds. Later features each have a folder `docs/specs/<feature>/` (`SPEC.md`, `tasks.md`, `workflow.md`, implementation/review/fix/summary reports), as in the sports server: `docs/specs/reauth/` (server-hosted re-authentication) and `docs/specs/agent-auth/` (`auth_status`, resources, URL-mode sign-in elicitation).
 
 ## Commands
 
@@ -30,19 +30,22 @@ Operating the container: `scripts/{setup,start,stop,restart,rebuild,auth,logs,st
 Package `src/gmail_mcp/`:
 
 - `__main__.py` — entry point: loads `config.Settings` (pydantic-settings, env-driven), sets up logging, builds the app, runs uvicorn.
-- `server.py` — builds the `MCPServer` app: registers exactly six tools with schemas/descriptions, wraps them with error handling, adds `/healthz`, and applies the Starlette middleware. Intentionally has **no** `from __future__ import annotations` because tool signatures embed runtime values (the result cap) in `Annotated` metadata that the SDK reads for JSON schema generation.
+- `server.py` — builds the `MCPServer` app: registers exactly seven tools and the four static auth/guide resources with schemas/descriptions, wraps the tools with error handling (and, for sign-in failures, URL-mode elicitation when the request allows it), adds `/healthz`, and applies the Starlette middleware. Intentionally has **no** `from __future__ import annotations` because tool signatures embed runtime values (the result cap) in `Annotated` metadata that the SDK reads for JSON schema generation.
 - `tools.py` — tool implementations; `gmail_client.py` — thin wrapper over the Gmail API service; `parsing.py` — MIME/header/body extraction and truncation; `models.py` — pydantic input/output types and validators.
 - `security.py` — `BearerAuthMiddleware` (constant-time compare; only `GET`/`HEAD` on the exact paths `/healthz`, `/auth`, `/oauth2callback` are unauthenticated) and `HostGuardMiddleware` (Host/Origin loopback check, DNS-rebinding defense).
-- `signin.py` — server-hosted sign-in: `GET /auth` (state + PKCE, bounded expiring in-memory pending store) and `GET /oauth2callback` (exchange off the event loop, scope check, atomic token write, `GmailClient.reset()`); static script-free pages with security headers. The sign-in link in auth errors is built from `HOST_PORT` (`errors.auth_hint`).
+- `signin.py` — server-hosted sign-in: `GET /auth` (state + PKCE, bounded expiring in-memory pending store) and `GET /oauth2callback` (exchange off the event loop, scope check, atomic token write, `GmailClient.reset()`); static script-free pages with security headers. The sign-in link in auth errors is built from `HOST_PORT` (`errors.auth_url`, `errors.auth_required_message`).
+- `auth_state.py` — pure sign-in state for `auth_status` and `gmail://auth/status`: reads only token metadata/scopes via `auth.read_token`, no network, never returns secrets. `resources.py` — text of the three guide resources (server-authored, no mailbox data).
 - `auth.py` / `auth_cli.py` — OAuth refresh-token storage (`data/token.json`, 0600, atomic writes; access tokens memory-only) and the one-off sign-in flow.
 - `logging_setup.py` — JSON logs with a secret-redaction filter (`register_secret`); `errors.py` — `GmailMcpError` mapped to user-facing tool errors.
 
 ## Invariants to preserve
 
-- The tool set is exactly `search_threads`, `get_thread`, `get_message`, `list_labels`, `list_drafts`, `create_draft`; a test asserts this. Never add send/delete/trash/relabel/settings/attachment-download capability. The `gmail.compose` scope technically allows sending, so safety depends on the absent tool and this server being the sole token holder.
+- The tool set is exactly `search_threads`, `get_thread`, `get_message`, `list_labels`, `list_drafts`, `create_draft`, `auth_status` (in that order); a test asserts this. `auth_status` is read-only and never raises an auth error. Never add send/delete/trash/relabel/settings/attachment-download capability. The `gmail.compose` scope technically allows sending, so safety depends on the absent tool and this server being the sole token holder.
+- Resources are exactly four static URIs (`gmail://auth/status`, `gmail://guide/auth`, `gmail://guide/search`, `gmail://guide/limits`), no templates, served through the same bearer + Host/Origin guards. Their content never holds mailbox data or credentials.
+- Sign-in elicitation (R5 of `docs/specs/agent-auth/SPEC.md`) only uses the SDK-defined URL-mode shapes, only when the request declares `elicitation.url`, only for the server's plain `/auth` URL, and only when `AUTH_URL_ELICITATION` is on. The server stays stateless (`stateless_http=True`, JSON): no per-session state is kept for it. Only the 2026-07-28 revision gets the elicitation (`InputRequiredResult`, amendment A1 / D7). The 2025-11-25 `-32042` mechanism is not implemented. Stateless mode does not retain handshake capabilities, so 2025-11-25 clients and requests with unknown capabilities get the R4 `AUTH_REQUIRED` tool error (pinned by `tests/test_mcp_gate.py`).
 - Email content is untrusted input to the model; tool descriptions carry that warning (`UNTRUSTED_NOTE`).
 - Logs must never contain bodies, subjects, addresses or credentials.
 - Output is bounded (`MAX_RESULTS_CAP`, `MAX_BODY_CHARS`, per-thread budget, 50 messages/thread, 512 KiB request limit).
-- The only unauthenticated routes are `GET`/`HEAD` `/healthz`, `/auth`, `/oauth2callback`, matched exactly and still behind the Host/Origin guard; sign-in pages never reflect request data and logs never contain codes/state/tokens.
+- The only unauthenticated routes are `GET`/`HEAD` `/healthz`, `/auth`, `/oauth2callback`, matched exactly and still behind the Host/Origin guard; sign-in pages never reflect request data and logs never contain codes/state/tokens. `auth_status` and the resources require the bearer token; do not add a new unauthenticated route for them.
 - Docker port mapping stays bound to `127.0.0.1` (no TLS); container is non-root, read-only rootfs.
 - On the `/mnt/c` checkout POSIX file modes are not enforced for `data/token.json`.

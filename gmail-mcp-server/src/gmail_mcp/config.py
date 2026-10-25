@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_results_cap: Annotated[int, Field(ge=1, le=500)] = 50
     max_body_chars: Annotated[int, Field(ge=100, le=1_000_000)] = 20_000
+    # Kill switch for URL-mode elicitation: when false, auth errors are plain tool errors only.
+    auth_url_elicitation: bool = True
 
     @field_validator("google_client_id", mode="after")
     @classmethod

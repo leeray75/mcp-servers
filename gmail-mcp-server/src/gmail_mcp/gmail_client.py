@@ -12,6 +12,7 @@ import http
 import logging
 import threading
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Any, Final, TypeVar
 
 import httplib2
@@ -22,7 +23,7 @@ from googleapiclient.errors import HttpError
 
 from gmail_mcp.auth import load_credentials
 from gmail_mcp.config import Settings
-from gmail_mcp.errors import AuthRequiredError, GmailApiError, GmailMcpError
+from gmail_mcp.errors import REJECTED_REASON, AuthRequiredError, GmailApiError, GmailMcpError
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def map_http_error(exc: HttpError) -> GmailMcpError:
     """Convert an ``HttpError`` into a safe error without echoing the response body."""
     status = int(exc.resp.status)
     if status == http.HTTPStatus.UNAUTHORIZED:
-        return AuthRequiredError("Google rejected the credentials.")
+        return AuthRequiredError(REJECTED_REASON)
     try:
         phrase = http.HTTPStatus(status).phrase
     except ValueError:
@@ -78,11 +79,34 @@ class GmailClient:
         self._factory = service_factory
         self._service: Any = None
         self._lock = threading.Lock()
+        # Guards only the rejection record, so status reads never wait behind a Gmail call.
+        self._state_lock = threading.Lock()
+        self._rejected_at: datetime | None = None
+
+    @property
+    def rejected_at(self) -> datetime | None:
+        """UTC time Google last rejected the credentials since the last sign-in, if any."""
+        with self._state_lock:
+            return self._rejected_at
+
+    def _record_rejection(self) -> None:
+        # Called only while holding ``_lock``; lock order is always _lock, then _state_lock.
+        with self._state_lock:
+            self._rejected_at = datetime.now(UTC)
+
+    def _clear_rejection(self) -> None:
+        with self._state_lock:
+            self._rejected_at = None
 
     def reset(self) -> None:
-        """Drop the cached service so the next call rebuilds it from the token file."""
+        """Drop the cached service and any rejection record (called after a sign-in).
+
+        Both happen under ``_lock``, so a call that was in flight when the sign-in completed
+        cannot record a rejection after the clear (reviewer m1).
+        """
         with self._lock:
             self._service = None
+            self._clear_rejection()
 
     async def _run(self, operation: Callable[[Any], _T]) -> _T:
         return await asyncio.to_thread(self._execute, operation)
@@ -92,17 +116,22 @@ class GmailClient:
             try:
                 if self._service is None:
                     self._service = self._factory()
-                return operation(self._service)
+                result = operation(self._service)
+                # A successful call proves the current credentials work (reviewer M1).
+                self._clear_rejection()
+                return result
             except AuthRequiredError:
                 self._service = None
                 raise
             except RefreshError:
                 self._service = None
-                raise AuthRequiredError("Google rejected the stored token.") from None
+                self._record_rejection()
+                raise AuthRequiredError(REJECTED_REASON) from None
             except HttpError as exc:
                 mapped = map_http_error(exc)
                 if isinstance(mapped, AuthRequiredError):
                     self._service = None
+                    self._record_rejection()
                 raise mapped from None
             except (GoogleAuthError, httplib2.HttpLib2Error, OSError, TimeoutError) as exc:
                 logger.warning("gmail transport failure", extra={"outcome": type(exc).__name__})
