@@ -132,6 +132,11 @@ PLAN: list[tuple[str, str]] = [
     ("player_profile_nfl_skattebo", f"{PLAYERS}/football/nfl/athletes/4696981"),
     ("player_profile_nba_lebron", f"{PLAYERS}/basketball/nba/athletes/1966"),
     ("player_stats_mlb_ohtani", f"{PLAYERS}/baseball/mlb/athletes/39832/stats"),
+    # Team rank and turnovers (spec: docs/specs/team-rank-and-turnovers). Captured 2026-10-24.
+    ("ncaaf_scoreboard_ranked", f"{SITE}/football/college-football/scoreboard?dates=20261024"),
+    ("ncaaf_summary_ranked", f"{SITE}/football/college-football/summary?event=401858274"),
+    ("ncaaf_team_miami", f"{SITE}/football/college-football/teams/2390"),
+    ("ncaaf_teams_directory", f"{SITE}/football/college-football/teams?limit=1000"),
 ]
 
 
@@ -173,6 +178,12 @@ def reduce_structure(name: str, data: dict[str, Any]) -> dict[str, Any]:
     for key in ("seasons",):
         if isinstance(data.get(key), list):
             data[key] = data[key][:2]
+    if name == "ncaaf_scoreboard_ranked":
+        # Keep the file under the 300 KB fixture budget: the scoreboard reader never uses the
+        # per-game leaders block (about 1.2 KB per game).
+        for event in data.get("events", []):
+            for comp in event.get("competitions", []):
+                comp.pop("leaders", None)
     return data
 
 

@@ -50,6 +50,7 @@ class TeamLine(_Model):
     abbr: str | None = None
     name: str | None = None
     score: int | None = None
+    rank: int | None = None  # ESPN poll rank 1..25 when the team is ranked (R1)
     record: str | None = None
     winner: bool | None = None
     linescores: list[str] | None = None
@@ -167,6 +168,21 @@ class BoxGroup(_Model):
     rows: list[BoxRow]
 
 
+class Turnovers(_Model):
+    """Football turnovers for one team, from the game's own box score (R6).
+
+    ``total`` = interceptions thrown + fumbles lost. ``takeaways`` = interceptions made by this
+    team plus the opponent's fumbles lost (fumbles this team recovered from the opponent).
+    """
+
+    total: int
+    interceptions_thrown: int
+    interceptions_thrown_by: list[str]
+    fumbles_lost: int
+    fumbles_lost_by: list[str]
+    takeaways: int
+
+
 class GameDetail(_Model):
     league: str
     detail: str
@@ -182,6 +198,7 @@ class GameDetail(_Model):
     attendance: int | None = None
     basis: Literal["game", "season"] | None = None  # what the player stats are
     performers: dict[str, list[Performer]] | None = None
+    turnovers: dict[str, Turnovers] | None = None  # keyed by team abbreviation (R6, football)
     boxscore: dict[str, list[BoxGroup]] | None = None
     truncated: bool | None = None
     note: str | None = None

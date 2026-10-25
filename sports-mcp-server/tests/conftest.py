@@ -117,6 +117,11 @@ def routes() -> dict[str, str]:
     r[f"{V2}/baseball/mlb/standings?level=3"] = "mlb_standings"
     r[f"{V2}/soccer/eng.1/standings"] = "epl_standings"
     r[f"{V2}/football/college-football/standings"] = "ncaaf_standings"
+    # Team rank and turnovers (docs/specs/team-rank-and-turnovers, captured 2026-10-24).
+    sb("football/college-football", "20261024", "ncaaf_scoreboard_ranked")
+    r[f"{SITE}/football/college-football/summary?event=401858274"] = "ncaaf_summary_ranked"
+    r[f"{SITE}/football/college-football/teams/2390"] = "ncaaf_team_miami"
+    r[f"{SITE}/football/college-football/teams?limit=1000"] = "ncaaf_teams_directory"
     r[f"{SITE}/football/nfl/teams?limit=1000"] = "nfl_teams"
     r[f"{SITE}/soccer/eng.1/teams?limit=1000"] = "epl_teams"
     r[f"{SITE}/baseball/mlb/teams?limit=1000"] = "mlb_teams"

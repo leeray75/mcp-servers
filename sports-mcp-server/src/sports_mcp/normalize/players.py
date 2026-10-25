@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from sports_mcp.leagues import Family
-from sports_mcp.models import BoxGroup, BoxRow, Performer
+from sports_mcp.models import BoxGroup, BoxRow, Performer, Turnovers
 from sports_mcp.normalize.common import as_dict, as_list, text
 
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
@@ -442,4 +443,64 @@ def box_tables(
         ]
         if groups:
             result[_team_abbr(block)] = groups
+    return result or None
+
+
+# ---------------------------------------------------------------- football turnovers (R6)
+
+
+@dataclass(frozen=True, slots=True)
+class _TeamTurnovers:
+    """One team's raw turnover counts, before the opponent's fumbles are known."""
+
+    thrown: int
+    thrown_by: list[str]
+    lost: int
+    lost_by: list[str]
+    made: int  # interceptions made by this team's defence
+
+
+def _team_turnovers(block: dict[str, Any]) -> _TeamTurnovers | None:
+    """``None`` when a needed table or label is missing: "not reported", not "none"."""
+    groups = {g.name: g for g in _groups(block)}
+    passing, fumbles, made = (
+        groups.get("passing"),
+        groups.get("fumbles"),
+        groups.get("interceptions"),
+    )
+    if passing is None or fumbles is None or made is None:
+        return None
+    if "INT" not in passing.labels or "LOST" not in fumbles.labels or "INT" not in made.labels:
+        return None
+    return _TeamTurnovers(
+        thrown=sum(int(r.n("INT")) for r in passing.rows),
+        thrown_by=[r.name for r in passing.rows if r.nz("INT")],
+        lost=sum(int(r.n("LOST")) for r in fumbles.rows),
+        lost_by=[r.name for r in fumbles.rows if r.nz("LOST")],
+        made=sum(int(r.n("INT")) for r in made.rows),
+    )
+
+
+def turnovers(boxscore_players: Any) -> dict[str, Turnovers] | None:
+    """Per-team turnover totals from a football box score (exactly two teams, else ``None``).
+
+    A team whose own tables, or whose opponent's fumble table, are missing gets no entry.
+    """
+    blocks = [as_dict(b) for b in as_list(boxscore_players)]
+    if len(blocks) != 2:
+        return None
+    parsed = [_team_turnovers(b) for b in blocks]
+    result: dict[str, Turnovers] = {}
+    for own_index, opponent_index in ((0, 1), (1, 0)):
+        own, opponent = parsed[own_index], parsed[opponent_index]
+        if own is None or opponent is None:
+            continue
+        result[_team_abbr(blocks[own_index])] = Turnovers(
+            total=own.thrown + own.lost,
+            interceptions_thrown=own.thrown,
+            interceptions_thrown_by=own.thrown_by,
+            fumbles_lost=own.lost,
+            fumbles_lost_by=own.lost_by,
+            takeaways=own.made + opponent.lost,
+        )
     return result or None

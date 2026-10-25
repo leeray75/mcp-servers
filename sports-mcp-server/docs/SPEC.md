@@ -6,6 +6,10 @@ are used in the RFC 2119 sense. "Stretch" items are optional and only attempted 
 > **Amendment pointer (2026-10-24):** the player tools `find_player`, `get_player_stats` and
 > `get_player_gamelog` are specified in `docs/specs/player-stats/SPEC.md`, which governs them where it conflicts
 > with this document. The tool set grows from 8 to 11 (its section 7).
+>
+> **Amendment pointer (2026-10-24):** team rank on game teams, `get_scoreboard(ranked_only, sort)` and the football
+> turnover line are specified in `docs/specs/team-rank-and-turnovers/SPEC.md`, which governs them where it conflicts
+> with this document. The tool set stays at eleven.
 
 ## 1. Purpose
 

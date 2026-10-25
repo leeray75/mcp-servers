@@ -120,7 +120,7 @@ Every result carries:
 
 Registry with `id, name, sport, kind, aliases`. No network call.
 
-### `get_scoreboard(league, date="today", status="all", week=None, season_type=None, limit=None, refresh=False)`
+### `get_scoreboard(league, date="today", status="all", week=None, season_type=None, limit=None, refresh=False, ranked_only=False, sort="time")`
 
 Games for one league and day. `date`: `today|yesterday|tomorrow|YYYY-MM-DD|YYYYMMDD` resolved in
 `DEFAULT_TIMEZONE`. `status`: `all|live|final|upcoming` (`final` means completed; postponed or canceled games only
@@ -129,6 +129,12 @@ show under `all`). `week` (1-25) and `season_type` (1 pre, 2 regular, 3 post, 4 
 `limit` 1-500 (without it, at most 100 games are returned, with a note saying how many matched). Games whose kickoff
 time ESPN has not confirmed show `TBD` (`time_tbd: true`, no `start_local`); postponed or canceled games are counted
 separately from finals and carry no placeholder score. Playoff notes (e.g. "Semifinals - Game 1") appear in the text.
+
+Ranks: where ESPN supplies a poll rank (1-25; seen in college football, the only ranked league captured so far), a ranked team shows as `#6 IU` in the
+text and as `rank: 6` in the structured form; unranked teams have no rank field. Records appear after the abbreviation
+(`#6 IU (6-1) 6`) while the text fits its 6 KB budget; otherwise they are dropped and the note says so. `ranked_only=true`
+keeps only games with a ranked team, and `sort="rank"` lists ranked games first (better rank, then the other team's
+rank, then start time). Both apply before `limit`. Leagues that send no rank field return no games with a note.
 Scoring plays use `OT`/`OT2` labels past regulation (hockey: `OT2/SO` from the second extra period, since ESPN does
 not say shootout). An empty day is not an error: `games: []` plus a note with the season window.
 
@@ -162,7 +168,10 @@ MLB outs/bases/batter/pitcher; NHL special strength when ESPN reports it).
 - `summary`: header, scoring plays (oldest first, max 40; skipped for basketball), allow-listed team stats (max 15),
   leaders, injuries (max 8 per team), the pre-game line with open/close, win probability, weather, attendance.
 - `performers`: summary plus the top `top_n` (1-15) players per team chosen by sport rules with one-line stat lines.
-- `boxscore`: summary plus full per-team player tables, trimmed to `max_chars` (default 20000) with
+  Football adds a turnover line per team from the box score: `TO: 2 (INT thrown 1 [A], fumbles lost 1 [B]); takeaways: 1`
+  (`TO` = interceptions thrown + fumbles lost; takeaways = interceptions made + the opponent's fumbles lost). Zero counts
+  are shown as `0`. Not shown before the game.
+- `boxscore`: summary plus full per-team player tables (football also gets the turnover line under each team), trimmed to `max_chars` (default 20000) with
   `truncated: true` and a note.
 
 Before the game starts player stats are omitted unless they are clearly season totals (MLB), in which case the

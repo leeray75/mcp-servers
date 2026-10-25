@@ -85,6 +85,7 @@ ODDS_NOTE: Final = (
     "this source."
 )
 STATUS_FILTERS: Final = ("all", "live", "final", "upcoming")
+SORT_ORDERS: Final = ("time", "rank")
 DETAIL_LEVELS: Final = ("summary", "performers", "boxscore")
 
 
@@ -214,10 +215,14 @@ class SportsService:
         season_type: int | None = None,
         limit: int | None = None,
         refresh: bool = False,
+        ranked_only: bool = False,
+        sort: str = "time",
     ) -> ToolOutput:
         lg = resolve_league(league)
         if status not in STATUS_FILTERS:
             raise InvalidInputError(f"status must be one of: {', '.join(STATUS_FILTERS)}.")
+        if sort not in SORT_ORDERS:
+            raise InvalidInputError(f"sort must be one of: {', '.join(SORT_ORDERS)}.")
         day = resolve_date(date, self.tz, self._now())
         notes: list[str] = []
         use_week = week is not None
@@ -247,6 +252,10 @@ class SportsService:
                     else g.status.state == "post" and g.status.completed
                 )
             ]
+        if ranked_only:
+            games = [g for g in games if any(t.rank is not None for t in g.teams)]
+        if sort == "rank":
+            games = sorted(games, key=_rank_order)
         total = len(games)
         cap = limit if limit is not None else MAX_SCOREBOARD_GAMES
         if total > cap:
@@ -257,22 +266,35 @@ class SportsService:
                     f"Pass limit=<n> (max {MAX_LIMIT}) or filter with status to see others."
                 )
         if not games:
-            notes.append(empty_day_hint(raw, lg, label))
-        result = ScoreboardResult(
-            league=lg.id,
-            date=label,
-            season=season_info(raw),
-            games=games,
-            count=len(games),
-            note=" ".join(notes) or None,
-            meta=self._meta(fetched, "scoreboard"),
-        )
-        return ToolOutput(
-            self._limit(render.render_scoreboard(result, lg, self.tz)),
-            dump(result),
-            lg.id,
-            _cache_label(fetched),
-        )
+            if ranked_only:
+                if not lg.has_poll_ranks:
+                    notes.append("This league's scoreboard carries no ranks.")
+                elif status != "all":
+                    notes.append(f"No ranked teams among the {status} games on this date.")
+                else:
+                    notes.append("No ranked teams play on this date.")
+            if not ranked_only or not as_list(raw.get("events")):
+                notes.append(empty_day_hint(raw, lg, label))
+
+        def build(all_notes: list[str], show_records: bool) -> tuple[ScoreboardResult, str]:
+            result = ScoreboardResult(
+                league=lg.id,
+                date=label,
+                season=season_info(raw),
+                games=games,
+                count=len(games),
+                note=" ".join(all_notes) or None,
+                meta=self._meta(fetched, "scoreboard"),
+            )
+            return result, render.render_scoreboard(result, lg, self.tz, show_records)
+
+        result, text = build(notes, True)
+        # Records go first when the text is over the 6 KB scoreboard budget; ranks always stay.
+        if len(text.encode()) > render.SCOREBOARD_TEXT_BUDGET and any(
+            t.record for g in games for t in g.teams
+        ):
+            result, text = build([*notes, render.RECORDS_OMITTED_NOTE], False)
+        return ToolOutput(self._limit(text), dump(result), lg.id, _cache_label(fetched))
 
     # ------------------------------------------------------------------ get_game
 
@@ -349,6 +371,8 @@ class SportsService:
 
         if basis and detail == "performers":
             base["performers"] = players_mod.top_performers(lg.family, players, rosters, top_n)
+        if basis == "game" and lg.family == "football":
+            base["turnovers"] = players_mod.turnovers(players)
         text = ""
         if basis and detail == "boxscore":
             tables = players_mod.box_tables(lg.family, players, rosters)
@@ -1004,6 +1028,22 @@ class SportsService:
 
 MAX_STANDINGS_ENTRIES: Final = 100
 MAX_SCOREBOARD_GAMES: Final = 100
+
+
+def _rank_order(game: Game) -> tuple[int, int, int, bool, str]:
+    """Ranked games first: better rank, then the other team's rank, then start time (R5).
+
+    A game without a start time sorts last within its tier.
+    """
+    ranks = sorted(t.rank for t in game.teams if t.rank is not None)
+    start = game.start_utc
+    missing = start is None
+    if not ranks:
+        return (1, 0, 0, missing, start or "")
+    other = ranks[1] if len(ranks) > 1 else 99  # an unranked team sorts after any ranked one
+    return (0, ranks[0], other, missing, start or "")
+
+
 MAX_LIMIT: Final = 500
 
 

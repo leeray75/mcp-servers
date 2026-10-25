@@ -59,19 +59,24 @@ _DESC_LIST_LEAGUES: Final = (
 )
 _DESC_SCOREBOARD: Final = (
     "Games for one league on one date: score, status (pre/in/post), period and clock, venue, "
-    "broadcasts, records, pre-game betting line and short live situation. Use for 'what are the "
-    "scores', 'who plays today', 'is the game over'. Returns game ids for get_game. Freshness is "
-    "in meta.as_of and meta.cache_age_seconds (live scoreboards cache for ~15 s; refresh=true "
-    "bypasses). An empty day is not an error. week/season_type work only for football leagues. "
-    "ESPN groups games by US Eastern date." + UNTRUSTED_NOTE
+    "broadcasts, records, pre-game betting line and short live situation. Ranked teams show "
+    "ESPN's poll rank (1-25, where the league supplies it) as #n. Use for 'what are the "
+    "scores', 'who plays today', 'is the game over'. ranked_only=true keeps only games with a "
+    "ranked team; sort='rank' lists ranked games first (better rank first, then the other "
+    "team's rank, then start time), otherwise ESPN's order. limit applies after both. Returns "
+    "game ids for get_game. Freshness is in meta.as_of and meta.cache_age_seconds (live "
+    "scoreboards cache for ~15 s; refresh=true bypasses). An empty day is not an error. "
+    "week/season_type work only for football leagues. ESPN groups games by US Eastern date."
+    + UNTRUSTED_NOTE
 )
 _DESC_GAME: Final = (
     "One game in detail by league and game_id (from get_scoreboard). detail='summary': score, "
     "scoring plays, team stats, leaders, injuries, win probability and the pre-game betting "
     "line; 'performers': adds the top players per team with one-line stat lines (top_n per "
-    "team); 'boxscore': adds full player tables, trimmed to max_chars. Before kickoff player "
-    "stats are omitted or labelled basis=season. Freshness is in meta.as_of; finished games "
-    "cache for an hour, live games ~15 s." + UNTRUSTED_NOTE
+    "team); 'boxscore': adds full player tables, trimmed to max_chars. Football performers and "
+    "boxscore add a TO line per team (interceptions thrown, fumbles lost, takeaways) from the "
+    "box score. Before kickoff player stats are omitted or labelled basis=season. Freshness is "
+    "in meta.as_of; finished games cache for an hour, live games ~15 s." + UNTRUSTED_NOTE
 )
 _DESC_ODDS: Final = (
     "Betting lines (spread, over/under, moneyline) for a league and date, or for one game_id. "
@@ -300,9 +305,25 @@ def create_server(settings: Settings, service: SportsService | None = None) -> M
             ),
         ] = None,
         refresh: RefreshArg = False,
+        ranked_only: Annotated[
+            bool,
+            Field(
+                description="Only games where a team has an ESPN poll rank (default false). "
+                "Leagues without ranks return no games with a note."
+            ),
+        ] = False,
+        sort: Annotated[
+            Literal["time", "rank"],
+            Field(
+                description="time (default, ESPN order) or rank: ranked games first, "
+                "best rank first."
+            ),
+        ] = "time",
     ) -> ToolOutput:
         """Games for a league and date."""
-        return await svc.get_scoreboard(league, date, status, week, season_type, limit, refresh)
+        return await svc.get_scoreboard(
+            league, date, status, week, season_type, limit, refresh, ranked_only, sort
+        )
 
     @server.tool(name="get_game", annotations=READ_ONLY, description=_DESC_GAME)
     @_instrumented("get_game")
