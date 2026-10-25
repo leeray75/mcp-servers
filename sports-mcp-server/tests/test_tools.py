@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
+from sports_mcp import render
 from sports_mcp.cache import TTLCache
 from sports_mcp.config import Settings
 from sports_mcp.errors import InvalidInputError, NotFoundError, UpstreamError
@@ -681,7 +682,7 @@ async def test_huge_scoreboards_are_capped_with_a_note(
     assert out.data["count"] == 100
     assert "128 games match; showing the first 100" in out.data["note"]
     explicit = await service.get_scoreboard("nfl", limit=100)
-    assert explicit.data["count"] == 100 and "note" not in explicit.data
+    assert explicit.data["count"] == 100 and explicit.data["note"] == render.RECORDS_OMITTED_NOTE
 
 
 async def test_college_basketball_requests_the_full_division_one_board(

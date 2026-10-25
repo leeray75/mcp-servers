@@ -33,6 +33,8 @@ class League:
     standings_level: int | None = None
     # ESPN's default college-basketball board shows only featured games; groups=50 is all of D1.
     scoreboard_groups: int | None = None
+    # ESPN sends a poll rank (curatedRank) for this league's teams: college leagues only (A1).
+    has_poll_ranks: bool = False
 
     @property
     def path(self) -> str:
@@ -59,6 +61,7 @@ LEAGUES: Final[tuple[League, ...]] = (
         "football",
         ("ncaaf", "cfb"),
         has_weeks=True,
+        has_poll_ranks=True,
     ),
     League("nba", "NBA", "basketball", "nba", "basketball", ("national-basketball-association",)),
     League("wnba", "WNBA", "basketball", "wnba", "basketball"),
@@ -70,6 +73,7 @@ LEAGUES: Final[tuple[League, ...]] = (
         "basketball",
         ("ncaam", "ncaab", "cbb"),
         scoreboard_groups=50,
+        has_poll_ranks=True,
     ),
     League(
         "womens-college-basketball",
@@ -79,6 +83,7 @@ LEAGUES: Final[tuple[League, ...]] = (
         "basketball",
         ("ncaaw",),
         scoreboard_groups=50,
+        has_poll_ranks=True,
     ),
     League(
         "mlb", "MLB", "baseball", "mlb", "baseball", ("major-league-baseball",), standings_level=3

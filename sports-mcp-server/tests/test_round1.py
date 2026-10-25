@@ -383,7 +383,8 @@ async def test_r1_13_limit_can_raise_the_default_cap(
     default = await service.get_scoreboard("nfl")
     assert default.data["count"] == 100 and "limit=<n> (max 500)" in default.data["note"]
     more = await service.get_scoreboard("nfl", limit=150)
-    assert more.data["count"] == 150 and "note" not in more.data
+    # Over the 6 KB scoreboard budget the records go, with their own note; no cap note.
+    assert more.data["count"] == 150 and more.data["note"] == render.RECORDS_OMITTED_NOTE
     all_of_them = await service.get_scoreboard("nfl", limit=500)
     assert all_of_them.data["count"] == 160
 

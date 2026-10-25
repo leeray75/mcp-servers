@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Team rank and turnovers (spec `docs/specs/team-rank-and-turnovers/SPEC.md`): ESPN's poll rank (1-25) on game teams
+  (`rank`; text `#6 IU`), team records shown in scoreboard text within its 6 KB budget (dropped with a note when over),
+  `get_scoreboard` parameters `ranked_only` and `sort="rank"` (applied before `limit`), and a football turnover line
+  (`TO`, takeaways) in `performers` and `boxscore`. The same turnover totals are also returned as a structured
+  `turnovers` field keyed by team abbreviation: an addition beyond the named output, consistent with the text line.
+  `find_team` is unchanged: ESPN's team payloads carry no rank.
 - Player tools `find_player`, `get_player_stats` and `get_player_gamelog` (tool set 8 -> 11; spec
   `docs/specs/player-stats/SPEC.md`, amendment A1). Names get typo retries; athlete ids use the profile endpoint.
   Game logs pick regular or postseason blocks by display name, compute totals from the listed games and show football

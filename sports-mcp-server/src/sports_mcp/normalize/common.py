@@ -158,16 +158,26 @@ def score_value(raw: Any) -> int | None:
     return as_int(raw)
 
 
+def poll_rank(value: Any) -> int | None:
+    """ESPN poll rank: an integer 1..25, else ``None`` (ESPN sends 99 or nothing when unranked)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 1 <= value <= 25 else None
+
+
 def team_line(competitor: dict[str, Any]) -> TeamLine:
     team = as_dict(competitor.get("team"))
     winner = competitor.get("winner")
     lines = [text(as_dict(ls).get("displayValue")) for ls in as_list(competitor.get("linescores"))]
+    # Scoreboard competitors carry curatedRank.current; game-summary header competitors carry rank.
+    rank = poll_rank(get(competitor, "curatedRank", "current")) or poll_rank(competitor.get("rank"))
     return TeamLine(
         home_away=text(competitor.get("homeAway")),
         id=text(team.get("id")) or text(competitor.get("id")),
         abbr=text(team.get("abbreviation")),
         name=text(team.get("displayName")) or text(team.get("name")),
         score=score_value(competitor.get("score")),
+        rank=rank,
         record=record_summary(competitor),
         winner=winner if isinstance(winner, bool) else None,
         linescores=[x for x in lines if x is not None] or None,
