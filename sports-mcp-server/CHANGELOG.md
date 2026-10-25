@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-25
+
 ### Added
 
 - Team rank and turnovers (spec `docs/specs/team-rank-and-turnovers/SPEC.md`): ESPN's poll rank (1-25) on game teams

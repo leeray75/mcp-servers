@@ -62,8 +62,11 @@ container and prints response sizes. `.env` holds the bearer token and is git-ig
 - Odds: ESPN drops lines at kickoff. Spread is the favorite's handicap (negative), derived from the spread side, not ESPN's `details`.
   `lines_basis` is `current` / `closing` / `unavailable`; never label a retained pre-game line as live.
 - Pre-game player stats are omitted unless clearly season totals, then `basis: "season"`; never present season totals as game stats.
-- Size budgets (asserted in `tests/test_render.py`): scoreboard text <= 6 KB (structured <= 25 KB), game summary <= 8 KB,
-  performers <= 12 KB, full-league standings <= 8 KB. Boxscore text is capped by `max_chars`.
+- Size budgets (asserted in `tests/test_render.py`): scoreboard text <= 6 KB (structured <= 25 KB on the scoreboard fixtures),
+  game summary <= 8 KB, performers <= 12 KB, full-league standings <= 8 KB. Boxscore text is capped by
+  `max_chars`. The real 44-game college-football scoreboard is instead guarded at < 40 KB structured (the 25 KB
+  budget predates that day, which was already 34 KB before rank/record; amendment A1 of
+  `docs/specs/team-rank-and-turnovers/SPEC.md`), asserted in `tests/test_team_rank.py`.
 - Memory: the container limit is 512 MiB; the cache must stay byte-bounded (parsed ESPN JSON is several times its raw size).
 - Soccer team schedules need a second `?fixture=true` call (ESPN omits upcoming matches otherwise); standings season comes from the table leaf, not ESPN's top level.
 - Logs never contain request arguments, results, upstream bodies, URLs (httpx logging is muted) or the token.

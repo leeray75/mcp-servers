@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sports-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server giving agents live, compact, correctly-labelled sports data (scores, schedules, standings, box scores, betting lines, headlines) from ESPN's public JSON API."
 readme = "README.md"
 requires-python = ">=3.12"
