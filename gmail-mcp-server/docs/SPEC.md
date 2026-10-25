@@ -26,7 +26,7 @@ gmail-mcp-server/
 │   └── tools.py             # tool implementations (pure functions over gmail_client)
 ├── tests/
 ├── scripts/                 # start|stop|restart|rebuild|auth|logs|status (.sh + .ps1)
-├── docs/                    # PLAN.md, SPEC.md, reauth/ (re-auth plan + spec), reports/
+├── docs/                    # PLAN.md, SPEC.md, specs/<feature>/ (reauth, agent-auth, agent-auth-hardening, release-v0.2.0), reports/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── pyproject.toml

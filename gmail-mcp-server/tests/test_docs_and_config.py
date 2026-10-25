@@ -63,9 +63,9 @@ def test_readme_documents_the_new_features() -> None:
 
 def test_changelog_records_the_additions() -> None:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = text.split("## [Unreleased]", 1)[1].split("## [", 1)[0]
+    released = text.split("## [0.2.0]", 1)[1].split("## [", 1)[0]
     for phrase in ("auth_status", "gmail://", "AUTH_URL_ELICITATION"):
-        assert phrase in unreleased
+        assert phrase in released
 
 
 HARDENING_FIELDS = ("ready_to_retry", "checked_at", "sign_in_in_progress")
@@ -79,9 +79,9 @@ def test_readme_documents_the_guardrails_and_fields() -> None:
 
 def test_changelog_records_the_hardening() -> None:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = text.split("## [Unreleased]", 1)[1].split("## [", 1)[0]
+    released = text.split("## [0.2.0]", 1)[1].split("## [", 1)[0]
     for phrase in (*HARDENING_FIELDS, "browser-automation"):
-        assert phrase in unreleased
+        assert phrase in released
 
 
 def test_spec_and_claude_md_document_the_hardening() -> None:
@@ -91,3 +91,13 @@ def test_spec_and_claude_md_document_the_hardening() -> None:
         assert phrase in spec
         assert phrase in claude
     assert "description" in claude
+
+
+def test_package_version_matches_pyproject() -> None:
+    import tomllib
+
+    import gmail_mcp
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+    assert gmail_mcp.__version__ == declared == "0.2.0"
