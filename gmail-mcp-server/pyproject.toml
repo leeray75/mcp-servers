@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gmail-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Minimal, locally hosted MCP server: read Gmail and create drafts. No send, delete or modify tools."
 readme = "README.md"
 requires-python = ">=3.12"

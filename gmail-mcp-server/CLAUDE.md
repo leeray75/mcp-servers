@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A minimal, self-owned MCP server (Python 3.12, official `mcp` SDK, Google client libs) giving an agent read access to Gmail plus draft creation. Streamable HTTP on 127.0.0.1 behind a bearer token, run in Docker inside WSL2. `docs/SPEC.md` is the authoritative spec; `docs/PLAN.md` and `docs/reports/` hold the build plan and review rounds. Later features each have a folder `docs/specs/<feature>/` (`SPEC.md`, `tasks.md`, `workflow.md`, implementation/review/fix/summary reports), as in the sports server: `docs/specs/reauth/` (server-hosted re-authentication) and `docs/specs/agent-auth/` (`auth_status`, resources, URL-mode sign-in elicitation).
+A minimal, self-owned MCP server (Python 3.12, official `mcp` SDK, Google client libs) giving an agent read access to Gmail plus draft creation. Streamable HTTP on 127.0.0.1 behind a bearer token, run in Docker inside WSL2. `docs/SPEC.md` is the authoritative spec; `docs/PLAN.md` and `docs/reports/` hold the build plan and review rounds. Later features each have a folder `docs/specs/<feature>/` (`SPEC.md`, `tasks.md`, `workflow.md`, implementation/review/fix/summary reports), as in the sports server: `docs/specs/reauth/` (server-hosted re-authentication) `docs/specs/agent-auth/` (`auth_status`, resources, URL-mode sign-in elicitation), `docs/specs/agent-auth-hardening/` (guardrails, `ready_to_retry`, `checked_at`, `sign_in_in_progress`) and `docs/specs/release-v0.2.0/` (this release).
 
 ## Commands
 

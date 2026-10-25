@@ -261,7 +261,7 @@ src/gmail_mcp/   config, logging_setup, auth, auth_cli, auth_state, resources, g
                  models, parsing, security, signin, server, tools, errors, __main__
 tests/           unit + MCP-level + HTTP-level tests (Gmail API mocked)
 scripts/         start|stop|restart|rebuild|auth|logs|status (.sh canonical, .ps1 wrappers)
-docs/            PLAN.md, SPEC.md, reauth/ (re-auth plan + spec), reports/
+docs/            PLAN.md, SPEC.md, specs/<feature>/ (reauth, agent-auth, agent-auth-hardening, release-v0.2.0), reports/
 ```
 
 ## Out of scope
