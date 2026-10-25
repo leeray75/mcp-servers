@@ -223,6 +223,11 @@ concurrent identical requests); bounded size (e.g. 256 entries, LRU). TTLs (env-
 | Teams | 86400 s |
 | Team schedule | 300 s (60 s if a game is in progress) |
 | News | 300 s |
+| Player name-search results | 3600 s (`TTL_PLAYER_SEARCH_SECONDS`) |
+| Player stats and game logs | 300 s (`TTL_PLAYER_SECONDS`) |
+
+These two TTLs and `PLAYER_MAX_SEASONS` (default 10, range 1-25; bounds the seasons fetched by
+`get_player_gamelog(season="all")`) are specified by `docs/specs/player-stats/SPEC.md`.
 
 `refresh=True` bypasses the cache and updates it. Failed upstream calls are never cached. If an upstream call fails and a cached
 value younger than `STALE_IF_ERROR_SECONDS` (default 300) exists, return it with `meta.stale=true` and a `note` saying the live fetch failed;
@@ -253,6 +258,8 @@ otherwise raise a tool error. `cache_age_seconds` is always accurate.
 `MCP_AUTH_TOKEN` (required for HTTP), `ESPN_BASE_URL`, `DEFAULT_TIMEZONE` (default `America/New_York`, validated with `zoneinfo`),
 `ESPN_TIMEOUT_SECONDS`, `ESPN_MAX_CONCURRENCY`, `TTL_*` overrides, `STALE_IF_ERROR_SECONDS`, `MAX_RESPONSE_CHARS`
 (default 20000), `HOST`/`PORT`/`HOST_PORT` (8767), `LOG_LEVEL`. Placeholders starting `replace-me` rejected.
+`TTL_PLAYER_SEARCH_SECONDS` (3600), `TTL_PLAYER_SECONDS` (300) and `PLAYER_MAX_SEASONS` (default 10) are
+specified by `docs/specs/player-stats/SPEC.md`.
 
 ## 11. Testing (offline by default)
 

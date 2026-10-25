@@ -134,7 +134,7 @@ Ranks: where ESPN supplies a poll rank (1-25; seen in college football, the only
 text and as `rank: 6` in the structured form; unranked teams have no rank field. Records appear after the abbreviation
 (`#6 IU (6-1) 6`) while the text fits its 6 KB budget; otherwise they are dropped and the note says so. `ranked_only=true`
 keeps only games with a ranked team, and `sort="rank"` lists ranked games first (better rank, then the other team's
-rank, then start time). Both apply before `limit`. Leagues that send no rank field return no games with a note.
+rank, then start time). Both apply before `limit`. Leagues that send no rank field return no games with a note. Design: `docs/specs/team-rank-and-turnovers/SPEC.md`.
 Scoring plays use `OT`/`OT2` labels past regulation (hockey: `OT2/SO` from the second extra period, since ESPN does
 not say shootout). An empty day is not an error: `games: []` plus a note with the season window.
 
@@ -302,6 +302,9 @@ All environment-driven (`.env` via compose). Errors name the field, never the va
 | `TTL_TEAMS_SECONDS` | `86400` | Team lists |
 | `TTL_SCHEDULE_SECONDS` / `TTL_SCHEDULE_LIVE_SECONDS` | `300` / `60` | Team schedule (shorter while a game is live) |
 | `TTL_NEWS_SECONDS` | `300` | News |
+| `TTL_PLAYER_SEARCH_SECONDS` | `3600` | `find_player` name-search results |
+| `TTL_PLAYER_SECONDS` | `300` | Player season stats and game logs |
+| `PLAYER_MAX_SEASONS` | `10` | Seasons fetched by `get_player_gamelog(season="all")` (1-25); oldest dropped first |
 | `STALE_IF_ERROR_SECONDS` | `300` | Max age of a copy served when ESPN fails |
 | `CACHE_MAX_ENTRIES` | `256` | LRU bound on entry count |
 | `CACHE_MAX_MB` | `96` | LRU bound on approximate resident size of cached payloads (parsed JSON is ~4x its serialised size); container limit is 512 MiB |
@@ -369,19 +372,24 @@ Keep the virtualenv off the Windows drive (`~/.venvs/...` in WSL). Runtime depen
 
 ### Fixtures
 
-`tests/fixtures/*.json` are **real ESPN responses** captured on 2026-10-04 with `tools/capture_fixtures.py`
-(stdlib only: `python tools/capture_fixtures.py [name-filter]`). The script drops tracking, link, image and
-play-by-play fields, keeps only scoring plays from `plays`, trims standings split records and shortens team lists,
-but leaves ESPN's structure intact. Each file is under 300 KB. Tests never touch the network: an autouse fixture
-fails any request that reaches httpx's real transport, and everything else goes through `httpx.MockTransport`.
+`tests/fixtures/*.json` are **real ESPN responses** captured with `tools/capture_fixtures.py`
+(stdlib only: `python tools/capture_fixtures.py [name-filter]`) in two campaigns: the league set on
+**2026-10-04**, and the player set plus the four `ncaaf_*` rank fixtures (`ncaaf_scoreboard_ranked`,
+`ncaaf_summary_ranked`, `ncaaf_team_miami`, `ncaaf_teams_directory`) on **2026-10-24**. The script drops
+tracking, link, image and play-by-play fields, keeps only scoring plays from `plays`, trims standings split
+records and shortens team lists, but leaves ESPN's structure intact. Each file is under 300 KB. Tests never
+touch the network: an autouse fixture fails any request that reaches httpx's real transport, and everything
+else goes through `httpx.MockTransport`.
 Covered: NFL (live, final, pre, a full 16-game slate, an empty day), NBA, MLB (including a 10-inning game), NHL,
-EPL, WNBA (live). No NHL/MLB/NBA game was live at capture time; the MLB situation and NHL strength adapters are
-tested with hand-built dicts shaped like ESPN's documented fields.
+EPL, WNBA (live); NCAA FBS from the 2026-10-24 set (a ranked 44-game scoreboard day, a ranked game summary, one
+team, and the 762-team directory); and the player endpoints (name search with typo retries, athlete profile,
+season stats, game logs) for NFL, NBA and MLB. No NHL/MLB/NBA game was live at capture time; the MLB situation
+and NHL strength adapters are tested with hand-built dicts shaped like ESPN's documented fields.
 
 ## Known limitations
 
 - ESPN's API is unofficial and undocumented; it can change or break without notice (tests cover the shapes
-  captured on 2026-10-04 only).
+  captured on 2026-10-04 and 2026-10-24 only).
 - No live in-game odds. No fantasy data, projections, play-by-play or video.
 - Individual sports (F1, golf, UFC, tennis) are not covered.
 - `get_team_schedule` returns whichever season type ESPN serves (not always the whole year).
