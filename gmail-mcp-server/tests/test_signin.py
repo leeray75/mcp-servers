@@ -498,4 +498,7 @@ async def test_auth_error_message_contains_the_clickable_link(
     assert auth_url(port) in text
     assert f"http://127.0.0.1:{port}/auth" in text
     assert "rejected the stored token" in text
-    assert "scripts/auth.sh" in text
+    # The SDK prefixes tool errors with "Error executing tool <name>: "; R4 text follows it.
+    assert "AUTH_REQUIRED: " in text
+    assert "scripts/auth" not in text
+    assert text.count(f"{auth_url(port)} ") == 1  # the bare, copy-friendly token

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 DEFAULT_HOST_PORT = 8765
+REJECTED_REASON: Final = (
+    "Google rejected the stored credentials; this commonly happens 7 days after sign-in "
+    "while the OAuth consent screen is in Testing status."
+)
 
 
 def auth_url(host_port: int = DEFAULT_HOST_PORT) -> str:
@@ -10,15 +16,19 @@ def auth_url(host_port: int = DEFAULT_HOST_PORT) -> str:
     return f"http://127.0.0.1:{host_port}/auth"
 
 
-def auth_hint(host_port: int = DEFAULT_HOST_PORT) -> str:
-    """Actionable sign-in instructions containing the clickable link."""
+def auth_required_message(reason: str, host_port: int = DEFAULT_HOST_PORT) -> str:
+    """The R4 ``AUTH_REQUIRED`` text: the reason, then the exact sign-in steps and link.
+
+    ``reason`` is a complete sentence ending in a period. The URL appears as a bare token
+    once (copy-friendly) and quoted inside the per-OS open commands.
+    """
+    url = auth_url(host_port)
     return (
-        f"Gmail is not authorised. Open {auth_url(host_port)} in your browser to sign in "
-        "(or run scripts/auth.ps1 on Windows / scripts/auth.sh in WSL)."
+        f"AUTH_REQUIRED: {reason}\n"
+        f"Do not retry yet. Ask the user to sign in: open {url} in their browser\n"
+        f'(Windows: Start-Process "{url}"; macOS: open "{url}"; Linux: xdg-open "{url}"),\n'
+        "have them approve access, then call auth_status and retry."
     )
-
-
-AUTH_HINT = auth_hint()
 
 
 class GmailMcpError(Exception):
@@ -32,13 +42,12 @@ class GmailMcpError(Exception):
 class AuthRequiredError(GmailMcpError):
     """No usable Google credentials: sign-in is missing, revoked or expired."""
 
-    def __init__(self, detail: str | None = None) -> None:
-        self.detail = detail
-        super().__init__(f"{detail} {AUTH_HINT}" if detail else AUTH_HINT)
+    def __init__(self, reason: str = "No usable Google credentials are stored.") -> None:
+        self.reason = reason
+        super().__init__(reason)
 
     def user_message(self, host_port: int = DEFAULT_HOST_PORT) -> str:
-        hint = auth_hint(host_port)
-        return f"{self.detail} {hint}" if self.detail else hint
+        return auth_required_message(self.reason, host_port)
 
 
 class GmailApiError(GmailMcpError):

@@ -47,6 +47,7 @@ Common to every server:
 ## Docs workflow
 
 Each server has `docs/SPEC.md` as the authoritative spec, and features are built through a spec → implementation report →
-review rounds → fix rounds → summary cycle recorded under `docs/reports/` (feature-specific subfolders such as
-`docs/reports/reauth/` and `docs/reports/search-filter/`). This is the SDD workflow defined in [AGENTS.md](AGENTS.md);
+review rounds → fix rounds → summary cycle. The original build's reports live in `docs/reports/`; each later feature has
+its own folder `docs/specs/<feature>/` (for example `docs/specs/player-stats/`, `docs/specs/reauth/`) holding `SPEC.md`,
+`tasks.md`, `workflow.md` and the reports. This is the SDD workflow defined in [AGENTS.md](AGENTS.md);
 follow it for every change.

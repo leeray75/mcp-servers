@@ -39,15 +39,15 @@ Details and acceptance criteria: [SPEC.md](SPEC.md).
 
 ## Workflow (SDD)
 
-1. Spec: `docs/reauth/SPEC.md` (this plan's normative companion).
+1. Spec: `docs/specs/reauth/SPEC.md` (this plan's normative companion).
 2. **Implementer** subagent (latest Sonnet) implements the spec, runs the full quality gate,
-   writes `docs/reports/reauth/implementation-report.md`.
+   writes `docs/specs/reauth/implementation-report.md`.
 3. **Reviewer** subagent (latest Sonnet, separate, does not edit code) reviews against the
-   spec and a security checklist and writes `docs/reports/reauth/review-round-N.md`, with
+   spec and a security checklist and writes `docs/specs/reauth/review-round-N.md`, with
    findings tagged BLOCKER / MAJOR / MINOR.
 4. Loop: the implementer fixes all BLOCKER/MAJOR findings (and MINOR where cheap) and
    writes `fix-round-N.md`; the reviewer re-reviews. **At most 5 rounds.**
-5. Orchestrator writes `docs/reports/reauth/summary-report.md`.
+5. Orchestrator writes `docs/specs/reauth/summary-report.md`.
 
 ## Constraints on agents
 

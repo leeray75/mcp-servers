@@ -69,7 +69,7 @@ Write the spec as a file, not only in chat:
 | Change | Spec location |
 |---|---|
 | New server | `<server>/docs/SPEC.md` |
-| Feature or change to an existing server | `<server>/docs/SPEC-<feature>.md`, an amendment that states what it extends or overrides in `docs/SPEC.md` |
+| Feature or change to an existing server | `<server>/docs/specs/<feature>/SPEC.md` (with `tasks.md`, `workflow.md` and the reports beside it), an amendment that states what it extends or overrides in `docs/SPEC.md` |
 | Repository-wide change | `docs/specs/<feature>.md` at the root |
 
 Required sections:

@@ -19,11 +19,30 @@ All notable changes to this project are documented here. The format follows
   automatically (`wslview`, `explorer.exe`, `xdg-open`, else prints the URL) and waits for the
   token file to change; `open_url` and `server_running` helpers in `scripts/lib/common.sh`.
 - `GmailClient.reset()`; redaction of Google authorization codes in logs.
+- `auth_status` tool (seventh tool, read-only): reports `state` (`signed_in`, `not_signed_in`,
+  `token_unreadable`, `scopes_insufficient`, `rejected`), granted and missing scopes, token age,
+  the time Google last rejected the credentials, warnings (including the 7-day Testing-mode expiry
+  from six days after sign-in), the next step and per-OS open commands. It never contacts Google
+  and never returns credentials.
+- Four static MCP resources: `gmail://auth/status` (the `auth_status` payload),
+  `gmail://guide/auth` (ordered sign-in procedure for agents), `gmail://guide/search` (Gmail search
+  syntax) and `gmail://guide/limits` (capabilities, limits, safety).
+- URL-mode elicitation of the sign-in page for clients on MCP 2026-07-28 that declare
+  `elicitation.url` on the request (`InputRequiredResult`, `mode: "url"`), with the plain `/auth`
+  URL only. Earlier revisions get the `AUTH_REQUIRED` text. Controlled by `AUTH_URL_ELICITATION` (default `true`).
+- Stable `AUTH_REQUIRED` tool-error text for sign-in failures: the reason, the bare sign-in link,
+  the OS open commands and the instruction to call `auth_status` and retry. No `scripts/auth.*`.
+- README section on publishing the OAuth consent screen to *In production* (ends the 7-day
+  Testing-mode refresh-token expiry), and on how sign-in is offered.
 
 ### Changed
 
 - `BearerAuthMiddleware` exempts exactly `GET`/`HEAD` on `/healthz`, `/auth` and
-  `/oauth2callback`. The MCP tool set is unchanged (six tools).
+  `/oauth2callback`. The MCP tool set is now seven tools: the six above plus `auth_status`.
+- The sign-in success page now reads "Gmail is connected. You can close this tab and return to
+  your assistant." (no client name).
+- Sign-in failures from Gmail calls are reported with the `AUTH_REQUIRED` text instead of the
+  previous "Gmail is not authorised" hint, which pointed at `scripts/auth.ps1`.
 
 ## [0.1.0] - 2026-10-01
 

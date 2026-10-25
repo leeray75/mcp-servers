@@ -66,7 +66,7 @@ The orchestrator also normalised six edited Python files from CRLF to LF to matc
 
 **Stale-document sweep (after the loop):** a repo-wide search for outdated auth wording found
 four stale spots, all fixed by the orchestrator: `docs/SPEC.md` §2 layout (added `signin.py`
-and `docs/reauth/`), the README project-layout `docs/` line, the CLAUDE.md docs pointer, and
+and `docs/specs/reauth/`), the README project-layout `docs/` line, the CLAUDE.md docs pointer, and
 `scripts/status.sh` (the no-token hint now includes the `/auth` link; `bash -n` OK). Kept as-is
 on purpose: `docs/PLAN.md`, `docs/reports/*.md` (the original build's historical records,
 still accurate), the port 8400 references (the one-off container fallback still uses it), and
