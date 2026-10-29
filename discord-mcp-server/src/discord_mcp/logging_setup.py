@@ -38,6 +38,12 @@ def register_secret(value: str) -> None:
             _literals.add(value)
 
 
+def unregister_secret(value: str) -> None:
+    """Stop scrubbing a value that is no longer secret-bearing (A3 fix round, m7)."""
+    with _literals_lock:
+        _literals.discard(value)
+
+
 def redact(text: str) -> str:
     """Replace anything resembling a credential in ``text`` with a marker."""
     with _literals_lock:

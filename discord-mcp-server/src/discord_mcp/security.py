@@ -71,11 +71,17 @@ class HostGuardMiddleware:
 
 
 class BearerAuthMiddleware:
-    """Require ``Authorization: Bearer <token>`` on every route except ``GET /healthz``."""
+    """Require ``Authorization: Bearer <token>`` on every route except ``GET /healthz``.
 
-    def __init__(self, app: ASGIApp, token: str) -> None:
+    ``open_paths`` are additional paths answered without a bearer token, for ``GET`` only (U15).
+    The caller passes the two OAuth routes here only when user OAuth is on; the Host and Origin
+    guard still applies to them.
+    """
+
+    def __init__(self, app: ASGIApp, token: str, open_paths: Collection[str] = frozenset()) -> None:
         self.app = app
         self._token = token.encode("utf-8")
+        self._open_paths = frozenset(open_paths)
 
     def _authorised(self, scope: Scope) -> bool:
         header = Headers(scope=scope).get("authorization", "")
@@ -96,6 +102,9 @@ class BearerAuthMiddleware:
             await send({"type": "websocket.close", "code": 1008})
             return
         if scope["path"] == HEALTH_PATH and scope["method"] in {"GET", "HEAD"}:
+            await self.app(scope, receive, send)
+            return
+        if scope["method"] == "GET" and scope["path"] in self._open_paths:
             await self.app(scope, receive, send)
             return
         if not self._authorised(scope):

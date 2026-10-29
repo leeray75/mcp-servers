@@ -29,9 +29,20 @@ require_docker() {
     die "the 'docker compose' plugin is missing (install docker-compose-plugin)."
 }
 
-# Run docker compose against this project, wherever the script is invoked from.
+# True when .env turns user OAuth on (DISCORD_USER_OAUTH=true). The value is compared, never printed.
+user_oauth_enabled() {
+  [ "$(env_get DISCORD_USER_OAUTH | tr '[:upper:]' '[:lower:]')" = "true" ]
+}
+
+# Run docker compose against this project, wherever the script is invoked from. With user OAuth on
+# (U30) the optional override is added: it mounts ./data for the token file and nothing else.
 compose() {
-  docker compose --project-directory "${ROOT_DIR}" "$@"
+  if user_oauth_enabled; then
+    docker compose --project-directory "${ROOT_DIR}" \
+      -f "${ROOT_DIR}/docker-compose.yml" -f "${ROOT_DIR}/docker-compose.oauth.yml" "$@"
+  else
+    docker compose --project-directory "${ROOT_DIR}" "$@"
+  fi
 }
 
 # Print the value of KEY from .env without sourcing the file (it is data, not code).

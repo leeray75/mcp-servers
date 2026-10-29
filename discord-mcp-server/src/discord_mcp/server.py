@@ -12,17 +12,27 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Annotated, Any, Final, Literal
+from pathlib import Path
+from typing import Annotated, Any, Final, Literal, cast
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
-from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, CallToolResult, TextContent, ToolAnnotations
+from mcp.types import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    CallToolResult,
+    ElicitRequest,
+    ElicitRequestURLParams,
+    InputRequiredResult,
+    TextContent,
+    ToolAnnotations,
+)
 from pydantic import BaseModel, Field, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from discord_mcp import __version__
 from discord_mcp.budget import ToolBudget
@@ -32,11 +42,16 @@ from discord_mcp.discord_client import DiscordClient
 from discord_mcp.errors import DiscordMcpError
 from discord_mcp.logging_setup import register_secret
 from discord_mcp.models import (
+    AccountStatusResult,
     AuditLogResult,
     ChannelListResult,
     ChannelResult,
+    ConnectResult,
+    DisconnectResult,
     GuildResult,
+    InviteLinkResult,
     ListGuildsResult,
+    ListMyGuildsResult,
     MemberListResult,
     MemberResult,
     MemberSearchResult,
@@ -47,8 +62,9 @@ from discord_mcp.models import (
     SearchResult,
     ThreadListResult,
 )
+from discord_mcp.oauth import TokenStore, UserAuth
 from discord_mcp.security import HEALTH_PATH, BearerAuthMiddleware, HostGuardMiddleware
-from discord_mcp.service import DiscordService
+from discord_mcp.service import DiscordService, UserOAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +217,170 @@ TITLES: Final[dict[str, str]] = {
 }
 
 
+# --- user OAuth guild discovery (amendment A3) -----------------------------------------------
+
+OAUTH_START_PATH: Final = "/oauth/start"
+OAUTH_CALLBACK_PATH: Final = "/oauth/callback"
+OAUTH_PATHS: Final = frozenset({OAUTH_START_PATH, OAUTH_CALLBACK_PATH})
+# The only protocol revision that gets a URL elicitation inside InputRequiredResult (U17).
+MODERN_REVISION: Final = "2026-07-28"
+CONNECT_KEY: Final = "discord_sign_in"
+CONNECT_MESSAGE: Final = "Discord needs you to sign in to connect your account"
+PAGE_HEADERS: Final[dict[str, str]] = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'",
+}
+SIGNED_IN_PAGE: Final = (
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    "<title>Discord account connected</title></head><body>"
+    "<p>Discord account connected. You can close this tab and return to your assistant.</p>"
+    "</body></html>"
+)
+SIGN_IN_FAILED_PAGE: Final = (
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    "<title>Discord sign-in failed</title></head><body>"
+    "<p>Discord sign-in failed. Return to your assistant and call connect_discord_account again."
+    "</p></body></html>"
+)
+USER_READ_ONLY: Final = ToolAnnotations(
+    read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
+USER_READ_OPEN: Final = ToolAnnotations(
+    read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True
+)
+USER_DISCONNECT: Final = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
+)
+USER_TITLES: Final[dict[str, str]] = {
+    "discord_account_status": "Discord account status",
+    "connect_discord_account": "Connect Discord account",
+    "disconnect_discord_account": "Disconnect Discord account",
+    "list_my_guilds": "List my Discord servers",
+    "get_guild_invite_link": "Get bot invite link",
+}
+USER_DESCRIPTIONS: Final[dict[str, str]] = {
+    "discord_account_status": (
+        "State of the Discord user account used for guild discovery: connected or not, the "
+        "username, scopes, expiry, whether a sign-in is pending and the last OAuth error. Reads "
+        "local state only; it never contacts Discord and never returns a token."
+    ),
+    "connect_discord_account": (
+        "Start the Discord sign-in. Returns sign_in_url: the human opens it in a browser and "
+        "approves the Discord sign-in. This tool sends nothing to Discord. A connected account is "
+        "left alone unless reconnect is true."
+    ),
+    "disconnect_discord_account": (
+        "Disconnect the Discord user account: revoke its grant with Discord (best effort) and "
+        "always delete the local token file. Never touches guild content."
+    ),
+    "list_my_guilds": (
+        "The Discord servers the signed-in human belongs to, with owner and permission data and "
+        "the flags allowlisted, bot_present and can_add_bot. Needs a connected account. Not "
+        "limited by the guild allowlist; reads only the membership list. with_counts adds "
+        "approximate member and presence counts. Results are not truncated unless truncated is "
+        "true (at most 1000 guilds)." + UNTRUSTED_NOTE
+    ),
+    "get_guild_invite_link": (
+        "The bot invite link for one guild (snowflake id). Makes no request and needs no account. "
+        "The human needs the Manage Server permission in that guild, and must then add the id to "
+        "DISCORD_ALLOWED_GUILD_IDS and restart."
+    ),
+}
+
+
+def _url_elicitation_requested(ctx: Context[Any, Any], settings: Settings) -> bool:
+    """U17: only a 2026-07-28 request that declares ``elicitation.url`` gets an elicitation."""
+    if not settings.discord_oauth_url_elicitation:
+        return False
+    capabilities = ctx.client_capabilities
+    elicitation = capabilities.elicitation if capabilities is not None else None
+    return (
+        elicitation is not None
+        and elicitation.url is not None
+        and ctx.protocol_version == MODERN_REVISION
+    )
+
+
+def _register_user_tools(
+    server: MCPServer,
+    user: UserOAuthService,
+    settings: Settings,
+    budget: ToolBudget,
+    plan: ToolPlan,
+) -> None:
+    """Register the five user-OAuth tools in the U5 order, when the plan includes them."""
+    planned = set(plan.user_tools)
+
+    def tool(name: str, annotations: ToolAnnotations) -> Callable[[Callable[..., Any]], Any]:
+        def decorate(func: Callable[..., Any]) -> Callable[..., Any]:
+            if name not in planned:
+                return func
+            server.tool(
+                name=name,
+                title=USER_TITLES[name],
+                description=USER_DESCRIPTIONS[name],
+                annotations=annotations,
+            )(func)
+            info = server._tool_manager.get_tool(name)  # noqa: SLF001 - SDK registry
+            if info is not None:
+                info.parameters["additionalProperties"] = False
+            return func
+
+        return decorate
+
+    @tool("discord_account_status", USER_READ_ONLY)
+    async def discord_account_status() -> Annotated[CallToolResult, AccountStatusResult]:
+        async def call() -> BaseModel:
+            return user.status()
+
+        return await _run(budget, "discord_account_status", call)
+
+    @tool("connect_discord_account", USER_READ_ONLY)
+    async def connect_discord_account(
+        ctx: Context[Any, Any], reconnect: bool = False
+    ) -> Annotated[CallToolResult, ConnectResult] | InputRequiredResult:
+        async def call() -> BaseModel | InputRequiredResult:
+            result = user.connect(reconnect)
+            if result.state == "authorization_required" and _url_elicitation_requested(
+                ctx, settings
+            ):
+                request = ElicitRequest(
+                    params=ElicitRequestURLParams(message=CONNECT_MESSAGE, url=settings.sign_in_url)
+                )
+                return InputRequiredResult(input_requests={CONNECT_KEY: request})
+            return result
+
+        return await _run_any(budget, "connect_discord_account", call)
+
+    @tool("disconnect_discord_account", USER_DISCONNECT)
+    async def disconnect_discord_account() -> Annotated[CallToolResult, DisconnectResult]:
+        async def call() -> BaseModel:
+            return await user.disconnect()
+
+        return await _run(budget, "disconnect_discord_account", call)
+
+    @tool("list_my_guilds", USER_READ_OPEN)
+    async def list_my_guilds(
+        with_counts: Annotated[
+            bool, Field(description="Add approximate member and presence counts.")
+        ] = False,
+    ) -> Annotated[CallToolResult, ListMyGuildsResult]:
+        async def call() -> BaseModel:
+            return await user.list_my_guilds(with_counts)
+
+        return await _run(budget, "list_my_guilds", call)
+
+    @tool("get_guild_invite_link", USER_READ_ONLY)
+    async def get_guild_invite_link(
+        guild_id: SnowflakeArg,
+    ) -> Annotated[CallToolResult, InviteLinkResult]:
+        async def call() -> BaseModel:
+            return user.get_guild_invite_link(guild_id)
+
+        return await _run(budget, "get_guild_invite_link", call)
+
+
 def _error_result(error: DiscordMcpError) -> CallToolResult:
     return CallToolResult(
         content=[TextContent(type="text", text=error.to_text())],
@@ -255,12 +435,15 @@ class DiscordServer(MCPServer):
             raise
 
 
-async def _run(
+async def _run_any(
     budget: ToolBudget,
     tool: str,
-    call: Callable[[], Awaitable[BaseModel]],
-) -> CallToolResult:
-    """Budget (R36), call the service, map errors (R30). Logs tool, duration and outcome only."""
+    call: Callable[[], Awaitable[BaseModel | InputRequiredResult]],
+) -> CallToolResult | InputRequiredResult:
+    """Budget (R36), call the service, map errors (R30). Logs tool, duration and outcome only.
+
+    An InputRequiredResult from the call (the connect elicitation, U17) is returned unchanged.
+    """
     started = time.monotonic()
     outcome = "ok"
     try:
@@ -273,7 +456,11 @@ async def _run(
                 retry_after=wait,
                 hint="Wait retry_after seconds; calls are refused, not queued.",
             )
-        return _ok_result(await call())
+        result = await call()
+        if isinstance(result, InputRequiredResult):
+            outcome = "sign_in_requested"
+            return result
+        return _ok_result(result)
     except DiscordMcpError as exc:
         outcome = exc.kind
         return _error_result(exc)
@@ -290,6 +477,15 @@ async def _run(
                 "outcome": outcome,
             },
         )
+
+
+async def _run(
+    budget: ToolBudget,
+    tool: str,
+    call: Callable[[], Awaitable[BaseModel]],
+) -> CallToolResult:
+    """``_run_any`` for tools whose call never returns an InputRequiredResult."""
+    return cast(CallToolResult, await _run_any(budget, tool, call))
 
 
 def _register_tools(
@@ -529,16 +725,56 @@ def _register_tools(
 
 
 def _boot_summary(plan: ToolPlan) -> str:
-    """One boot line (R7, A1-R7): registered, omitted with reasons, forced, observed flags."""
-    registered = ", ".join(plan.registered) or "none"
+    """One boot line (R7, A1-R7, U28): registered, omitted, forced, flags and user OAuth."""
+    registered = ", ".join(plan.registered + plan.user_tools) or "none"
     omitted = ", ".join(f"{name}={reason}" for name, reason in plan.omitted) or "none"
     forced = ", ".join(plan.forced) or "none"
     flags = "null" if plan.flags is None else str(plan.flags)
     source = plan.flags_source or "null"
     return (
         f"boot tools registered: {registered}; omitted: {omitted}; forced: {forced}; "
-        f"application_flags: {flags} source={source}"
+        f"application_flags: {flags} source={source}; user_oauth={plan.user_oauth}"
     )
+
+
+def _not_found() -> Response:
+    return Response(status_code=404)
+
+
+def _oauth_handlers(
+    user: UserOAuthService, enabled: Callable[[], bool]
+) -> tuple[Callable[[Request], Awaitable[Response]], Callable[[Request], Awaitable[Response]]]:
+    """The two loopback sign-in routes (U8-U15). Both answer 404 unless the plan enabled them."""
+
+    async def start(request: Request) -> Response:
+        """U8: a fresh pending flow, then a 302 to Discord's authorize URL. Nothing else is sent."""
+        if not enabled():
+            return _not_found()
+        location = user.begin_sign_in()
+        logger.info("oauth start", extra={"route": "GET /oauth/start", "status": 302})
+        return Response(status_code=302, headers={**PAGE_HEADERS, "Location": location})
+
+    async def callback(request: Request) -> Response:
+        """U11-U14: complete the sign-in. Fixed pages only; query values are never echoed."""
+        if not enabled():
+            return _not_found()
+        params = request.query_params
+        ok = await user.complete_sign_in(
+            state=params.get("state"),
+            iss=params.get("iss"),
+            code=params.get("code"),
+            error=params.get("error"),
+        )
+        status = 200 if ok else 400
+        outcome = "connected" if ok else "refused_or_failed"
+        logger.info(
+            "oauth callback",
+            extra={"route": "GET /oauth/callback", "status": status, "outcome": outcome},
+        )
+        page = SIGNED_IN_PAGE if ok else SIGN_IN_FAILED_PAGE
+        return HTMLResponse(page, status_code=status, headers=PAGE_HEADERS)
+
+    return start, callback
 
 
 def create_app(
@@ -547,11 +783,14 @@ def create_app(
     transport: Any = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
     now: Callable[[], datetime] | None = None,
+    user_now: Callable[[], float] | None = None,
 ) -> Starlette:
     """Build the ASGI app: MCP at ``/mcp``, ``/healthz``, Host guard and bearer auth.
 
     The boot probe runs in the lifespan, before the listener serves MCP traffic (R4), and the
-    tool set is registered from its outcome (R5-R8). Stateless, JSON responses.
+    tool set is registered from its outcome (R5-R8). Stateless, JSON responses. With user OAuth
+    on (A3) the token store, the user-side client and the two loopback sign-in routes are built
+    here; the plan decides at boot whether they are live (U4).
     """
     token = settings.mcp_auth_token.get_secret_value()
     register_secret(token)
@@ -565,6 +804,23 @@ def create_app(
         per_tool_per_minute=settings.tool_calls_per_minute_per_tool,
     )
     server = DiscordServer(SERVER_NAME, instructions=INSTRUCTIONS, version=__version__)
+
+    user_auth: UserAuth | None = None
+    user_svc: UserOAuthService | None = None
+    user_client: DiscordClient | None = None
+    user_routes = {"live": False}  # set from the plan at boot (U4)
+    if settings.discord_user_oauth:
+        if settings.discord_oauth_client_secret is not None:
+            register_secret(settings.discord_oauth_client_secret.get_secret_value())
+        clock_seconds: Callable[[], float] = user_now or time.time
+        user_auth = UserAuth(
+            TokenStore(Path(settings.discord_oauth_token_file)), clock=clock_seconds
+        )
+        user_client = DiscordClient(
+            settings, transport=transport, sleep=sleeper, user_auth=user_auth
+        )
+        user_svc = UserOAuthService(settings, user_auth, user_client, svc, now=clock_seconds)
+        user_auth.attach_refresh(user_svc.refresh_exchange)
 
     async def healthz(request: Request) -> Response:
         """Liveness with boot state. Never contains tokens, guild ids or user ids (R5)."""
@@ -586,6 +842,10 @@ def create_app(
         host="0.0.0.0",  # noqa: S104 - container bind; compose restricts host exposure
     )
     app.add_route(HEALTH_PATH, healthz, methods=["GET"])
+    if user_svc is not None:
+        start_handler, callback_handler = _oauth_handlers(user_svc, lambda: user_routes["live"])
+        app.add_route(OAUTH_START_PATH, start_handler, methods=["GET"])
+        app.add_route(OAUTH_CALLBACK_PATH, callback_handler, methods=["GET"])
 
     inner: Any = app.router.lifespan_context
 
@@ -594,8 +854,15 @@ def create_app(
         async with inner(application):
             try:
                 outcome = await svc.boot()
-                plan = plan_tools(settings, svc.probe)
+                user_state = "not_connected"
+                if user_auth is not None:
+                    user_auth.load()
+                    user_state = user_auth.state
+                plan = plan_tools(settings, svc.probe, user_state)
                 _register_tools(server, svc, budget, plan)
+                if user_svc is not None:
+                    _register_user_tools(server, user_svc, settings, budget, plan)
+                user_routes["live"] = plan.user_oauth.startswith("on(")
                 logger.info(_boot_summary(plan), extra={"outcome": f"probe:{outcome}"})
                 if outcome == "unreachable":
                     logger.warning(
@@ -605,11 +872,16 @@ def create_app(
                 yield
             finally:
                 await svc.aclose()
+                if user_client is not None:
+                    await user_client.aclose()
 
     app.router.lifespan_context = lifespan
     app.state.discord_service = svc
     app.state.discord_server = server
-    # Last added is outermost: Host guard runs first, then bearer auth.
-    app.add_middleware(BearerAuthMiddleware, token=token)
+    app.state.user_oauth = user_svc
+    # Last added is outermost: Host guard runs first, then bearer auth. The two sign-in routes
+    # are the only bearer exemption, and only with user OAuth on (U15).
+    open_paths = OAUTH_PATHS if settings.discord_user_oauth else frozenset[str]()
+    app.add_middleware(BearerAuthMiddleware, token=token, open_paths=open_paths)
     app.add_middleware(HostGuardMiddleware)
     return app

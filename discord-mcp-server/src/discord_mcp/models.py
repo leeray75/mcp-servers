@@ -271,3 +271,69 @@ class AuditLogResult(BaseModel):
     order: str
     has_more: bool
     next_cursor: dict[str, str] | None
+
+
+# --- user OAuth guild discovery (A3, U16-U21) -------------------------------------------------
+# These models use the same exclude_unset rule as the rest: a key the projection never set is
+# omitted from the result, not sent as null.
+
+
+class AccountStatusResult(BaseModel):
+    enabled: bool
+    state: str
+    user_id: str | None = None
+    username: str | None = None
+    scopes: list[str] | None = None
+    expires_at: str | None = None
+    connected_at: str | None = None
+    pending_sign_in: bool
+    last_error: str | None
+    sign_in_url: str
+    redirect_uri: str
+
+
+class OpenCommands(BaseModel):
+    windows: str
+    macos: str
+    linux: str
+
+
+class ConnectResult(BaseModel):
+    state: str
+    username: str | None = None
+    sign_in_url: str
+    redirect_uri: str | None = None
+    instructions: str | None = None
+    open_commands: OpenCommands | None = None
+
+
+class DisconnectResult(BaseModel):
+    state: str
+    revoked: bool | None = None
+
+
+class MyGuild(BaseModel):
+    id: str
+    name: str | None
+    icon: str | None
+    owner: bool
+    permissions: str
+    features: list[str]
+    approximate_member_count: int | None = None
+    approximate_presence_count: int | None = None
+    allowlisted: bool
+    bot_present: bool | None
+    can_add_bot: bool
+
+
+class ListMyGuildsResult(BaseModel):
+    guilds: list[MyGuild]
+    count: int
+    truncated: bool
+    bot_guilds_known: bool
+
+
+class InviteLinkResult(BaseModel):
+    guild_id: str
+    url: str
+    note: str

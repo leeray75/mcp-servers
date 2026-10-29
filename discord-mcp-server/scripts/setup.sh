@@ -153,6 +153,31 @@ while true; do
   fi
 done
 
+# U32: optional user OAuth guild discovery. Off unless the human answers yes.
+printf '\n5) Optional: user OAuth guild discovery (lists your own servers; see README)\n'
+oauth_enabled=0
+oauth_app_id=""
+oauth_secret=""
+if ask_yes_no "Enable user OAuth guild discovery?" "n"; then
+  oauth_enabled=1
+  while true; do
+    read -r -p "Application id (the OAuth client id, Developer Portal > General Information): " oauth_app_id
+    if [ -n "${oauth_app_id}" ] && [[ "${oauth_app_id}" =~ ^[0-9]{15,21}$ ]]; then
+      break
+    fi
+    warn "the application id must be 15-21 digits."
+  done
+  while true; do
+    read -r -s -p "OAuth client secret (Developer Portal > OAuth2; not echoed): " oauth_secret
+    printf '\n'
+    if [ -n "${oauth_secret}" ] && is_safe_value "${oauth_secret}" && [[ "${oauth_secret}" != replace-me* ]]; then
+      break
+    fi
+    warn "enter the client secret without spaces or quotes (it must not be the placeholder)."
+    oauth_secret=""
+  done
+fi
+
 if [ -f "${ENV_FILE}" ]; then
   ask_yes_no "Write these values to ${ENV_FILE}, replacing its contents?" "y" ||
     die "left .env unchanged."
@@ -167,11 +192,26 @@ TMP_FILE="$(mktemp "${ROOT_DIR}/.env.XXXXXX")"
   printf 'DISCORD_BOT_TOKEN=%s\n' "${bot_token}"
   printf 'DISCORD_ALLOWED_GUILD_IDS=%s\n' "${allow}"
   printf 'HOST_PORT=%s\n' "${host_port}"
+  if [ "${oauth_enabled}" -eq 1 ]; then
+    printf 'DISCORD_USER_OAUTH=true\n'
+    printf 'DISCORD_APPLICATION_ID=%s\n' "${oauth_app_id}"
+    printf 'DISCORD_OAUTH_CLIENT_SECRET=%s\n' "${oauth_secret}"
+  fi
 } >"${TMP_FILE}"
 mv -f "${TMP_FILE}" "${ENV_FILE}"
 TMP_FILE=""
 chmod 600 "${ENV_FILE}" 2>/dev/null || true
 bot_token=""
+oauth_secret=""
+if [ "${oauth_enabled}" -eq 1 ]; then
+  # U31: the token folder the compose override mounts. Created here, git-ignored.
+  # m10: no chmod here. The container user (UID 10001) must be able to write this folder, and
+  # forcing a mode could lock it out; the token file itself is always written 0600.
+  mkdir -p "${ROOT_DIR}/data"
+  printf 'Token folder: %s\n' "${ROOT_DIR}/data"
+  printf 'The container user (UID 10001) must be able to write it. On a native Linux filesystem run:\n'
+  printf '  sudo chown 10001:10001 %s\n' "${ROOT_DIR}/data"
+fi
 
 check_env
 printf '\nSaved %s.\n\nNext step:\n' "${ENV_FILE}"

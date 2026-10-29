@@ -651,3 +651,14 @@ as recorded in the summary report.
 ### A2 open questions
 
 None.
+
+## 18. Amendment A3 (user OAuth guild discovery, 2026-10-29)
+
+- **Status:** Approved, 2026-10-29, approved by: human.
+- The optional user-OAuth discovery feature is specified in `docs/specs/user-oauth/SPEC.md`. Where it conflicts with sections 1-17,
+  that document wins. It is off by default (`DISCORD_USER_OAUTH=false`): with the switch off the server is unchanged, with 14 tools
+  and no OAuth routes.
+- It narrows these invariants, only while the switch is on: the tool set (19 tools, five of them account tools); POST, limited to the
+  two fixed OAuth URLs on the same host; the bearer exemption for the two `GET /oauth/*` routes; and the container's writable `/data`
+  folder for the token file (`docker-compose.oauth.yml`). Every other invariant in sections 6, 7, 11 and 12 holds, including
+  allowlist-gated bot tools, the bot-only hard stop, and no secrets in logs, errors or results.

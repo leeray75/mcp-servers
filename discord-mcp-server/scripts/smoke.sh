@@ -18,6 +18,8 @@ token="$(env_get MCP_AUTH_TOKEN)"
 export SMOKE_URL
 SMOKE_URL="$(mcp_url)"
 export SMOKE_TOKEN="${token}"
+# U33: with user OAuth on, also check the five account tools (status only; no sign-in is attempted).
+if user_oauth_enabled; then export SMOKE_USER_OAUTH=1; else export SMOKE_USER_OAUTH=0; fi
 
 python3 - <<'PYSMOKE'
 import json
@@ -89,6 +91,26 @@ else:
     missing = structured.get("missing_allowlisted_guild_ids", [])
     print(f"  [ok ] list_guilds: text={len(text.encode())}B response={size}B "
           f"guilds={len(guilds)} missing={len(missing)}")
+
+if os.environ.get("SMOKE_USER_OAUTH") == "1":
+    print("== user OAuth (status only; no sign-in attempted)")
+    account_tools = {
+        "discord_account_status",
+        "connect_discord_account",
+        "disconnect_discord_account",
+        "list_my_guilds",
+        "get_guild_invite_link",
+    }
+    if len(names) > 19 or not account_tools <= set(names):
+        failures.append("user OAuth tools are missing or the tool list is too long")
+    data, size = rpc("tools/call", {"name": "discord_account_status", "arguments": {}})
+    status_result = data["result"]
+    if status_result.get("isError"):
+        failures.append("discord_account_status returned an error")
+        print(f"  [FAIL] discord_account_status: {size}B")
+    else:
+        state = (status_result.get("structuredContent") or {}).get("state")
+        print(f"  [ok ] discord_account_status: state={state} response={size}B")
 
 print()
 if failures:

@@ -22,7 +22,7 @@ commands from inside the subproject directory.
 | `gmail-mcp-server/` | Python 3.12, `mcp` SDK | 8765 | Gmail read + draft creation (OAuth) |
 | `vision-mcp-server/` | Python 3.12, `mcp` SDK | 8766 | `describe_image` via an OpenAI-compatible vision backend (LiteLLM + Qwen) |
 | `sports-mcp-server/` | Python 3.12, `mcp` SDK | 8767 | Read-only ESPN sports data |
-| `discord-mcp-server/` | Python 3.12, `mcp` SDK | 8769 | Read-only, guild-allowlisted Discord data (channels, history, search, members, audit log) over Discord REST v10 |
+| `discord-mcp-server/` | Python 3.12, `mcp` SDK | 8769 | Read-only, guild-allowlisted Discord data (channels, history, search, members, audit log) over Discord REST v10; optional user-OAuth guild discovery (off by default) |
 | `firecrawl-mcp-server/` | Node 22 | 8768 | Gateway/supervisor around pinned upstream `firecrawl-mcp` against self-hosted Firecrawl |
 
 All containers publish `127.0.0.1:<port> -> 8000`. Keep ports distinct when adding a server.

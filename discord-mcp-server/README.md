@@ -8,6 +8,12 @@ It talks to Discord's public REST API (v10) with a **bot token**, through a thin
 It is deliberately narrow: 14 read-only tools, a default-deny guild allowlist, and explicit errors for the cases where
 Discord would otherwise answer with an empty list that looks like "nothing here".
 
+**What this server can and can never read.** It reads guilds where (a) the bot has been invited — which requires
+someone with **Manage Server** in that guild (the owner or an admin) — and (b) the guild id is in your allowlist. It can
+**never** read your personal DMs, group DMs, friends list or DM content: bots cannot be present in user-to-user
+conversations, and Discord gates the DM-capable OAuth scopes to approved partners. If you need your own DMs archived,
+use Discord's Settings → Privacy & Safety → *Request All Data* export and hand the archive to your agent offline.
+
 > Specification: [`docs/SPEC.md`](docs/SPEC.md) (authoritative). Build record: [`docs/specs/initial-build/`](docs/specs/initial-build/).
 
 ## Before you install: checklist
@@ -36,6 +42,10 @@ Discord would otherwise answer with an empty list that looks like "nothing here"
 
    `66688` = `VIEW_CHANNEL` (1024) | `READ_MESSAGE_HISTORY` (65536) | `VIEW_AUDIT_LOG` (128). Add `CONNECT`
    (1048576) to read text chat in voice channels: the combined value is **`1115264`**.
+
+   Completing this step requires **Manage Server** in that server — the owner or an admin. If you are only a member,
+   you need an admin to open the link. With user OAuth enabled (section 4), `get_guild_invite_link` generates the same
+   link prefilled and locked to one guild, so an admin's install is a single click.
 
 5. Get the **guild ids** you allow: enable Developer Mode in Discord (User Settings > Advanced), then right-click a
    server > **Copy Server ID**.
@@ -141,6 +151,60 @@ roughly double; for the largest pages that total can exceed 4 MiB. Lower `limit`
 
 Returned Discord content (messages, names, topics, embeds) is untrusted third-party text, not instructions. The
 server returns it in full (no per-item truncation) and never fetches the links in it.
+
+With `DISCORD_USER_OAUTH=true` five account tools are added after these (see the next section). They use the human's own
+Discord account, not the bot, and none of them reads guild content.
+
+| Tool | Purpose | Needs |
+|---|---|---|
+| `discord_account_status` | Connected or not, username, scopes, expiry, pending sign-in, last OAuth error. No network request | nothing |
+| `connect_discord_account` | Returns `sign_in_url` (the browser opens it). Sends nothing to Discord. `reconnect=true` replaces a connection | nothing |
+| `disconnect_discord_account` | Revokes the grant (best effort) and always deletes the local token file | a connected account (or none) |
+| `list_my_guilds` | Your servers with `allowlisted`, `bot_present`, `can_add_bot`; `with_counts` adds approximate counts | a connected account |
+| `get_guild_invite_link` | Bot invite URL for one guild (`permissions=66688`). No request | nothing |
+
+### User OAuth guild discovery (optional)
+
+**What it can do.** List the servers you belong to, see which ones the bot is already in, which ones you can add it to
+(owner, Administrator or Manage Server), and get a one-click invite link. That is all.
+
+**What it cannot do.** Discord's user OAuth scopes used here (`identify guilds`) do not read channels, messages, members or
+audit logs. Reading guild content as a member who is not the bot's owner is not possible through any sanctioned API, so this
+feature never does it.
+
+**Portal setup (once).** In the Developer Portal, open your application, go to OAuth2, copy the **Client Secret** and add
+this exact **Redirect URI**: `http://127.0.0.1:<HOST_PORT>/oauth/callback` (default `http://127.0.0.1:8769/oauth/callback`).
+`HOST_PORT` must match the value in `.env`. The redirect is derived from it; there is no separate setting.
+
+**Enable.** Run `scripts/setup.sh` and answer yes to "Enable user OAuth guild discovery?", then enter the application id
+and the client secret (hidden). Or set in `.env`: `DISCORD_USER_OAUTH=true`, `DISCORD_APPLICATION_ID`,
+`DISCORD_OAUTH_CLIENT_SECRET`. Then `scripts/restart.sh --recreate` (compose then also mounts `./data`).
+
+**Sign-in.** Call `connect_discord_account`, open the `sign_in_url` it returns (or accept the client's prompt), approve on
+Discord, and wait for "Discord account connected". Then `discord_account_status` shows `connected`. The sign-in page is served
+by the MCP server on `127.0.0.1` only; `state` (single use, 10 minutes), `iss` and the code never reach the model.
+
+**Token file.** `./data/discord_user_token.json` on the host (`/data/discord_user_token.json` in the container), written
+atomically with mode 0600 (not enforced on `/mnt/c`, as with Gmail). The folder is git-ignored and must be writable by the container user (UID 10001); on a native Linux filesystem run
+`sudo chown 10001:10001 data`. Temporary `.discord_user_token.json.*.tmp` files left by an interrupted save hold
+tokens; the server deletes them at the next start or save. To remove the account, call
+`disconnect_discord_account`, or stop the container and delete the file by hand. If the server cannot delete the file
+(for example a permission error), `disconnect_discord_account` returns `kind=unavailable`; the token is already out of
+the server's memory and the revoke result still applies, but the file remains on disk and must be deleted by hand. The
+error hint names the configured path, never the contents (A3.2, U18). Reconnecting does **not** revoke the previous grant (D29): revoking one token revokes every token of that
+authorization, which can include the new one. Old grants can be removed under Discord User Settings → Authorized
+Apps. The live check AC-L1 records what Discord does on reconnect.
+
+**Lifetime.** Discord access tokens last about 7 days. The server refreshes them shortly before expiry (within 5 minutes)
+and after a rejected request, one refresh at a time. A rejected refresh clears the token and asks you to connect again.
+Refresh-token rotation is not documented by Discord; the server stores whatever Discord returns.
+
+**Kill switches.** `DISCORD_OAUTH_URL_ELICITATION=false` disables the URL elicitation prompt (the plain result is returned).
+`DISCORD_OAUTH_PKCE=false` drops the PKCE parameters if Discord rejects them. Set it only if sign-in fails with PKCE on.
+
+**Routes.** `GET /oauth/start` and `GET /oauth/callback` are unauthenticated, but only on `127.0.0.1` behind the Host and
+Origin guard, only while this feature is on, and only with `GET` (a non-GET request without a valid bearer gets `401`; with a valid bearer it gets `405`). They are protected by single-use
+`state`, the `iss` check and the 10-minute expiry, and they show fixed pages that echo nothing.
 
 ## 5. Client configuration
 
