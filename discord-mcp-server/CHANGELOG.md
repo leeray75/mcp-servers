@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Docs
+
+- README states the platform boundary explicitly: the bot install requires **Manage Server** in the guild (owner or
+  admin; admins can be helped by `get_guild_invite_link`), and personal DMs, group DMs, friends list and DM content are
+  out of reach of every sanctioned API (bots cannot join user-to-user conversations; DM-capable OAuth scopes are
+  partner-gated). Docs-only; no behavior change.
+
 ### Added (user OAuth guild discovery, amendment A3, off by default)
 
 - Optional `DISCORD_USER_OAUTH=true` adds five account tools: `discord_account_status`, `connect_discord_account`,

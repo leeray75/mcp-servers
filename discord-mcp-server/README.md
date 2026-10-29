@@ -8,6 +8,12 @@ It talks to Discord's public REST API (v10) with a **bot token**, through a thin
 It is deliberately narrow: 14 read-only tools, a default-deny guild allowlist, and explicit errors for the cases where
 Discord would otherwise answer with an empty list that looks like "nothing here".
 
+**What this server can and can never read.** It reads guilds where (a) the bot has been invited — which requires
+someone with **Manage Server** in that guild (the owner or an admin) — and (b) the guild id is in your allowlist. It can
+**never** read your personal DMs, group DMs, friends list or DM content: bots cannot be present in user-to-user
+conversations, and Discord gates the DM-capable OAuth scopes to approved partners. If you need your own DMs archived,
+use Discord's Settings → Privacy & Safety → *Request All Data* export and hand the archive to your agent offline.
+
 > Specification: [`docs/SPEC.md`](docs/SPEC.md) (authoritative). Build record: [`docs/specs/initial-build/`](docs/specs/initial-build/).
 
 ## Before you install: checklist
@@ -36,6 +42,10 @@ Discord would otherwise answer with an empty list that looks like "nothing here"
 
    `66688` = `VIEW_CHANNEL` (1024) | `READ_MESSAGE_HISTORY` (65536) | `VIEW_AUDIT_LOG` (128). Add `CONNECT`
    (1048576) to read text chat in voice channels: the combined value is **`1115264`**.
+
+   Completing this step requires **Manage Server** in that server — the owner or an admin. If you are only a member,
+   you need an admin to open the link. With user OAuth enabled (section 4), `get_guild_invite_link` generates the same
+   link prefilled and locked to one guild, so an admin's install is a single click.
 
 5. Get the **guild ids** you allow: enable Developer Mode in Discord (User Settings > Advanced), then right-click a
    server > **Copy Server ID**.
