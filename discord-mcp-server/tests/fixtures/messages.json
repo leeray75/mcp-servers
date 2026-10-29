@@ -1,0 +1,82 @@
+[
+  {
+    "id": "1234567890123456789",
+    "channel_id": "999999999999999999",
+    "author": {
+      "id": "121212121212121212",
+      "username": "alice",
+      "global_name": "Alice",
+      "avatar": "ffffffffffffffffffffffffffffffff",
+      "bot": false
+    },
+    "content": "Release notes are in the thread",
+    "timestamp": "2026-10-20T12:00:00.000000+00:00",
+    "edited_timestamp": null,
+    "tts": false,
+    "mention_everyone": false,
+    "mentions": [
+      {"id": "131313131313131313", "username": "bob", "global_name": null, "bot": false, "member": {"roles": []}}
+    ],
+    "mention_roles": ["666666666666666666"],
+    "attachments": [
+      {
+        "id": "141414141414141414",
+        "filename": "notes.txt",
+        "content_type": "text/plain; charset=utf-8",
+        "size": 2048,
+        "url": "https://cdn.discordapp.com/attachments/1/2/notes.txt",
+        "proxy_url": "https://media.discordapp.net/attachments/1/2/notes.txt"
+      }
+    ],
+    "embeds": [
+      {
+        "type": "rich",
+        "title": "Changelog",
+        "description": "Synthetic embed",
+        "url": "https://example.com/changelog",
+        "fields": [{"name": "Version", "value": "1.2.3", "inline": true}]
+      }
+    ],
+    "reactions": [
+      {"count": 3, "me": false, "emoji": {"id": null, "name": "✅"}},
+      {"count": 1, "me": false, "emoji": {"id": "555555555555555555", "name": "wave"}}
+    ],
+    "pinned": false,
+    "type": 0,
+    "flags": 0,
+    "message_reference": {"message_id": "1212121212121212121", "channel_id": "999999999999999999"},
+    "sticker_items": [{"id": "161616161616161616", "name": "Party", "format_type": 1}],
+    "poll": {
+      "question": {"text": "Ship it?"},
+      "answers": [
+        {"answer_id": 1, "poll_media": {"text": "Yes"}},
+        {"answer_id": 2, "poll_media": {"text": "No"}}
+      ],
+      "expiry": null,
+      "allow_multiselect": false,
+      "layout_type": 1,
+      "results": {
+        "is_finalized": true,
+        "answer_counts": [{"id": 1, "count": 9, "me_voted": false}, {"id": 2, "count": 4, "me_voted": false}]
+      }
+    }
+  },
+  {
+    "id": "1212121212121212121",
+    "channel_id": "999999999999999999",
+    "author": {"id": "131313131313131313", "username": "bob", "bot": false},
+    "content": "Older message",
+    "timestamp": "2026-10-19T08:30:00.000000+00:00",
+    "edited_timestamp": "2026-10-19T09:00:00.000000+00:00",
+    "tts": false,
+    "mention_everyone": true,
+    "mentions": [],
+    "mention_roles": [],
+    "attachments": [],
+    "embeds": [],
+    "pinned": true,
+    "type": 0,
+    "flags": 0,
+    "thread": {"id": "171717171717171717", "name": "thread"}
+  }
+]

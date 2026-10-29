@@ -14,6 +14,7 @@ deliberate house style: least privilege, loopback-only networking, bearer-token 
 | [`gmail-mcp-server`](gmail-mcp-server/README.md) | Python 3.12, `mcp` SDK | `8765` | Read access to Gmail and draft creation. No send, delete or modify tools exist |
 | [`vision-mcp-server`](vision-mcp-server/README.md) | Python 3.12, `mcp` SDK | `8766` | `describe_image`: lets text-only models see images through an OpenAI-compatible vision backend (e.g. LiteLLM + Qwen) |
 | [`sports-mcp-server`](sports-mcp-server/README.md) | Python 3.12, `mcp` SDK | `8767` | Live, compact, timestamped scores, schedules, standings, box scores, odds and news for 15 leagues (ESPN public API) |
+| [`discord-mcp-server`](discord-mcp-server/README.md) | Python 3.12, `mcp` SDK | `8769` | Read-only access to allowlisted Discord servers: channels, message history, search, members and the audit log, with explicit empty-versus-forbidden and index-pending errors |
 | [`firecrawl-mcp-server`](firecrawl-mcp-server/README.md) | Node 22 | `8768` | A persistent HTTP gateway around the pinned upstream `firecrawl-mcp`, pointed at a self-hosted Firecrawl API |
 
 Each server's own README is the full reference for its tools, configuration and troubleshooting.
@@ -26,6 +27,7 @@ Each server's own README is the full reference for its tools, configuration and 
  (Goose …)  │  127.0.0.1:8766 ─▶ vision-mcp    ─▶ LiteLLM   │
   ──HTTP──▶ │  127.0.0.1:8767 ─▶ sports-mcp    ─▶ ESPN      │
   + Bearer  │  127.0.0.1:8768 ─▶ firecrawl-mcp ─▶ Firecrawl │
+            │  127.0.0.1:8769 ─▶ discord-mcp   ─▶ Discord   │
             │      (Docker Engine inside WSL2)              │
             └───────────────────────────────────────────────┘
 ```

@@ -9,12 +9,15 @@ Each server keeps its own changelog for its code and behavior:
 - [gmail-mcp-server](gmail-mcp-server/CHANGELOG.md)
 - [vision-mcp-server](vision-mcp-server/CHANGELOG.md)
 - [sports-mcp-server](sports-mcp-server/CHANGELOG.md)
+- [discord-mcp-server](discord-mcp-server/CHANGELOG.md)
 - [firecrawl-mcp-server](firecrawl-mcp-server/CHANGELOG.md)
 
 ## [Unreleased]
 
 ### Added
 
+- `discord-mcp-server` (read-only, guild-allowlisted Discord access over REST API v10; spec
+  `discord-mcp-server/docs/SPEC.md` with amendment A1, port 8769). Initial build and fix round 1.
 - Monorepo combining `gmail-mcp-server`, `vision-mcp-server`, `sports-mcp-server` and
   `firecrawl-mcp-server`. gmail's prior commit history is preserved under its directory.
 - Root `.gitignore` as a safety net for `.env` files, `node_modules` and Python virtualenvs.

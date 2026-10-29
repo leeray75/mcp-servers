@@ -1,0 +1,36 @@
+{
+  "id": "333333333333333333",
+  "name": "Example Guild",
+  "description": "A synthetic guild for tests",
+  "owner_id": "444444444444444444",
+  "approximate_member_count": 42,
+  "approximate_presence_count": 7,
+  "verification_level": 1,
+  "premium_tier": 0,
+  "premium_subscription_count": 0,
+  "preferred_locale": "en-US",
+  "features": ["COMMUNITY"],
+  "emojis": [{"id": "555555555555555555", "name": "wave", "animated": false}],
+  "roles": [
+    {
+      "id": "666666666666666666",
+      "name": "Mods",
+      "position": 2,
+      "color": 3447003,
+      "permissions": "0",
+      "managed": false,
+      "hoist": true,
+      "mentionable": true
+    },
+    {
+      "id": "333333333333333333",
+      "name": "@everyone",
+      "position": 0,
+      "color": 0,
+      "permissions": "66560",
+      "managed": false,
+      "hoist": false,
+      "mentionable": false
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "111111111111111111",
+  "username": "example-bot",
+  "discriminator": "0",
+  "global_name": "Example Bot",
+  "avatar": "0123456789abcdef0123456789abcdef",
+  "bot": true,
+  "flags": 0
+}
