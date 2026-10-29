@@ -1,0 +1,20 @@
+[
+  {
+    "user": {"id": "121212121212121212", "username": "alice", "global_name": "Alice", "avatar": "ab", "bot": false},
+    "nick": "Ali",
+    "roles": ["666666666666666666"],
+    "joined_at": "2025-06-01T10:00:00.000000+00:00",
+    "premium_since": null,
+    "deaf": false,
+    "mute": false,
+    "pending": false,
+    "communication_disabled_until": null
+  },
+  {
+    "user": {"id": "131313131313131313", "username": "bob", "bot": false},
+    "nick": null,
+    "roles": [],
+    "joined_at": "2025-07-02T10:00:00.000000+00:00",
+    "pending": true
+  }
+]

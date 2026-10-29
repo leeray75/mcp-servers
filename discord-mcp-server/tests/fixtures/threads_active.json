@@ -1,0 +1,44 @@
+{
+  "threads": [
+    {
+      "id": "171717171717171717",
+      "type": 11,
+      "guild_id": "333333333333333333",
+      "parent_id": "999999999999999999",
+      "owner_id": "121212121212121212",
+      "name": "release-thread",
+      "last_message_id": "1234567890123456789",
+      "message_count": 12,
+      "member_count": 4,
+      "rate_limit_per_user": 0,
+      "flags": 0,
+      "thread_metadata": {
+        "archived": false,
+        "auto_archive_duration": 1440,
+        "archive_timestamp": "2026-10-28T10:00:00.000000+00:00",
+        "locked": false,
+        "create_timestamp": "2026-10-20T11:00:00.000000+00:00"
+      }
+    },
+    {
+      "id": "181818181818181818",
+      "type": 11,
+      "guild_id": "333333333333333333",
+      "parent_id": "888888888888888888",
+      "owner_id": "131313131313131313",
+      "name": "side-topic",
+      "message_count": 2,
+      "member_count": 1,
+      "thread_metadata": {
+        "archived": false,
+        "auto_archive_duration": 60,
+        "archive_timestamp": "2026-10-27T10:00:00.000000+00:00",
+        "locked": false
+      }
+    }
+  ],
+  "members": [
+    {"id": "171717171717171717", "user_id": "111111111111111111", "join_timestamp": "2026-10-20T11:01:00.000000+00:00", "flags": 1}
+  ],
+  "has_more": false
+}

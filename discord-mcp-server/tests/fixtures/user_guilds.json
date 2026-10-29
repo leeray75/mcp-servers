@@ -1,0 +1,22 @@
+[
+  {
+    "id": "333333333333333333",
+    "name": "Example Guild",
+    "icon": null,
+    "owner": true,
+    "permissions": "2147483647",
+    "features": ["COMMUNITY"],
+    "approximate_member_count": 42,
+    "approximate_presence_count": 7
+  },
+  {
+    "id": "777777777777777777",
+    "name": "Not Allowlisted",
+    "icon": null,
+    "owner": false,
+    "permissions": "0",
+    "features": [],
+    "approximate_member_count": 3,
+    "approximate_presence_count": 1
+  }
+]

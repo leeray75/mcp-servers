@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "pinned_at": "2026-10-19T09:00:00.000000+00:00",
+      "message": {
+        "id": "1212121212121212121",
+        "channel_id": "999999999999999999",
+        "author": {"id": "131313131313131313", "username": "bob", "bot": false},
+        "content": "pinned text",
+        "timestamp": "2026-10-19T08:30:00.000000+00:00",
+        "mentions": [],
+        "attachments": [],
+        "embeds": [],
+        "pinned": true
+      }
+    }
+  ],
+  "has_more": false
+}

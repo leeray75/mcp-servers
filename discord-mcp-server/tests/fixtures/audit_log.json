@@ -1,0 +1,27 @@
+{
+  "audit_log_entries": [
+    {
+      "id": "191919191919191919",
+      "user_id": "121212121212121212",
+      "target_id": "181818181818181818",
+      "action_type": 110,
+      "reason": "Cleanup",
+      "changes": [{"key": "archived", "old_value": false, "new_value": true}],
+      "options": {"auto_archive_duration": "60"}
+    },
+    {
+      "id": "202020202020202020",
+      "user_id": "999999999999999990",
+      "target_id": "666666666666666666",
+      "action_type": 31,
+      "changes": [{"key": "name", "old_value": "Old", "new_value": "Mods"}]
+    }
+  ],
+  "users": [
+    {"id": "121212121212121212", "username": "alice", "bot": false}
+  ],
+  "webhooks": [],
+  "integrations": [],
+  "threads": [],
+  "application_commands": []
+}

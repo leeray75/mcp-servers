@@ -1,0 +1,45 @@
+{
+  "analytics_id": "00000000-0000-0000-0000-000000000000",
+  "documents_indexed": 1200,
+  "doc_count": 1200,
+  "total_results": 2,
+  "messages": [
+    [
+      {
+        "id": "1234567890123456789",
+        "channel_id": "999999999999999999",
+        "author": {"id": "121212121212121212", "username": "alice", "bot": false},
+        "content": "deploy notes",
+        "timestamp": "2026-10-20T12:00:00.000000+00:00",
+        "mentions": [],
+        "attachments": [],
+        "embeds": [],
+        "hit": true
+      }
+    ],
+    [
+      {
+        "id": "1212121212121212120",
+        "channel_id": "999999999999999999",
+        "author": {"id": "131313131313131313", "username": "bob", "bot": false},
+        "content": "context before",
+        "timestamp": "2026-10-19T08:29:00.000000+00:00",
+        "mentions": [],
+        "attachments": [],
+        "embeds": [],
+        "hit": false
+      },
+      {
+        "id": "1212121212121212121",
+        "channel_id": "999999999999999999",
+        "author": {"id": "131313131313131313", "username": "bob", "bot": false},
+        "content": "deploy notes, older",
+        "timestamp": "2026-10-19T08:30:00.000000+00:00",
+        "mentions": [],
+        "attachments": [],
+        "embeds": [],
+        "hit": true
+      }
+    ]
+  ]
+}
