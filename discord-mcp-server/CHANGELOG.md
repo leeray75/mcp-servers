@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added (user OAuth guild discovery, amendment A3, off by default)
+
+- Optional `DISCORD_USER_OAUTH=true` adds five account tools: `discord_account_status`, `connect_discord_account`,
+  `disconnect_discord_account`, `list_my_guilds` and `get_guild_invite_link`. Only the human's own guild list and a
+  bot invite link are available; no guild content can be read with the user token.
+- Loopback sign-in routes `GET /oauth/start` and `GET /oauth/callback` with single-use `state`, `iss` and expiry checks,
+  PKCE S256 behind a kill switch, and an unauthenticated exception to the bearer check only while the feature is on.
+- Token file at `/data/discord_user_token.json` (`docker-compose.oauth.yml` mounts `./data`), written atomically with mode 0600;
+  refresh is serialized and a rejected grant clears the token.
+- The user side has its own rate limiter; a user-token 401 never trips the bot hard stop. Setup, smoke and compose
+  selection handle the feature.
+- With the switch off the server is unchanged: 14 tools, no OAuth routes, no new settings read.
+
 ### Fixed (fix round 1, review M1 and m1-m11)
 
 - A bucket lease is released on every path, including cancellation and non-transport request errors; a cancelled

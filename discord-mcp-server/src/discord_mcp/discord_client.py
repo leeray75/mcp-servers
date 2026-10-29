@@ -25,6 +25,7 @@ import httpx
 
 from discord_mcp.config import Settings
 from discord_mcp.errors import DiscordMcpError
+from discord_mcp.oauth import CONNECT_HINT, UserAuth
 from discord_mcp.ratelimit import Clock, Lease, RateLimiter, Sleep
 
 logger = logging.getLogger(__name__)
@@ -166,8 +167,19 @@ def _application_flags(app: Mapping[str, Any]) -> tuple[int | None, str | None]:
     return None, None
 
 
+def oauth_urls(api_base: str) -> tuple[str, str]:
+    """The only two URLs that may ever receive a POST (U22): token and revoke, same origin."""
+    parts = urlsplit(api_base)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    return f"{origin}/api/oauth2/token", f"{origin}/api/oauth2/token/revoke"
+
+
 class DiscordClient:
-    """Thin async GET client for Discord REST API v10 with rate limiting and error mapping."""
+    """Thin async client for Discord REST API v10 with rate limiting and error mapping.
+
+    GET is the only method for bot calls. The user-side instance (``user_auth`` given) also POSTs,
+    but only through :meth:`post_form`, to the two fixed OAuth URLs.
+    """
 
     def __init__(
         self,
@@ -177,7 +189,11 @@ class DiscordClient:
         clock: Clock = time.monotonic,
         sleep: Sleep = asyncio.sleep,
         rand: Callable[[], float] = random.random,
+        user_auth: UserAuth | None = None,
     ) -> None:
+        """Bot client by default. With ``user_auth`` this is the user-side client (A3, U23): it
+        sends ``Authorization: Bearer`` per request, has its own rate limiter and hard-stop state,
+        and is the only client allowed to POST to the two fixed OAuth URLs (U22)."""
         self._base = settings.discord_api_base
         self._host = settings.api_host
         self._max_bytes = settings.discord_max_response_bytes
@@ -185,6 +201,11 @@ class DiscordClient:
         self._max_429 = settings.discord_max_429_retries
         self._clock = clock
         self._sleep_fn = sleep
+        self._user = user_auth
+        self._token_url, self._revoke_url = oauth_urls(settings.discord_api_base)
+        self._oauth_id = settings.discord_application_id or ""
+        secret = settings.discord_oauth_client_secret
+        self._oauth_secret = secret.get_secret_value() if secret is not None else ""
         self.limiter = RateLimiter(
             max_wait_seconds=settings.discord_max_rate_limit_wait_seconds,
             invalid_budget=settings.discord_invalid_request_budget,
@@ -194,15 +215,14 @@ class DiscordClient:
             rand=rand,
         )
         timeout = settings.discord_timeout_seconds
+        headers = {"User-Agent": settings.discord_user_agent, "Accept": "application/json"}
+        if user_auth is None:
+            headers["Authorization"] = f"Bot {settings.discord_bot_token.get_secret_value()}"
         self._http = httpx.AsyncClient(
             transport=transport,
             timeout=httpx.Timeout(timeout, connect=min(5.0, timeout)),
             follow_redirects=False,
-            headers={
-                "Authorization": f"Bot {settings.discord_bot_token.get_secret_value()}",
-                "User-Agent": settings.discord_user_agent,
-                "Accept": "application/json",
-            },
+            headers=headers,
         )
 
     async def aclose(self) -> None:
@@ -221,8 +241,18 @@ class DiscordClient:
             raise DiscordMcpError("upstream", "Discord request host is not the configured host")
         return url
 
-    async def _send(self, url: str) -> tuple[int, dict[str, str], bytes]:
-        async with self._http.stream("GET", url) as response:
+    async def _send(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: Mapping[str, str] | None = None,
+        form: Mapping[str, str] | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        async with self._http.stream(
+            method, url, headers=headers, data=form, auth=auth
+        ) as response:
             headers = {key.lower(): value for key, value in response.headers.items()}
             body = bytearray()
             async for chunk in response.aiter_bytes():
@@ -252,21 +282,34 @@ class DiscordClient:
 
     # ------------------------------------------------------------ requests
 
-    async def get(self, route: Route, params: Sequence[tuple[str, str]] = ()) -> Response:
+    async def get(
+        self,
+        route: Route,
+        params: Sequence[tuple[str, str]] = (),
+        *,
+        access_token: str | None = None,
+    ) -> Response:
         """GET one route. Raises :class:`DiscordMcpError` for every failure (R30-R31).
 
         The bucket lease is released in ``finally`` on every path, including cancellation, so a
-        cancelled or crashed request can never wedge its bucket (review M1).
+        cancelled or crashed request can never wedge its bucket (review M1). On the user-side
+        client the Bearer token is resolved before the lease is taken; a user-token 401 gets one
+        serialized refresh and one replay (U24-U25). ``access_token`` is only used by the connect
+        flow, before any token is stored, and is never refreshed.
         """
         url = self._url(route.path, params)
         retries = 0  # transport errors and 5xx share the GET retry budget (R18)
         replays = 0  # 429 replays (R22)
+        user_replays = 0  # user-token 401 replays (U24): at most one
+        bearer = await self._bearer(access_token)
         while True:
             lease = await self.limiter.acquire("GET", route.template, route.major)
             started = self._clock()
             try:
                 try:
-                    status, headers, raw = await self._send(url)
+                    status, headers, raw = await self._send(
+                        url, headers=self._request_headers(bearer)
+                    )
                 except _TooLarge:
                     self._log(route, started, "upstream_response_too_large")
                     raise DiscordMcpError(
@@ -313,6 +356,17 @@ class DiscordClient:
                         retry_after=round(_retry_after_seconds(body, headers), 3),
                     )
                 lease.release()
+                if (
+                    status == 401
+                    and self._user is not None
+                    and access_token is None
+                    and user_replays == 0
+                ):
+                    # U24: one serialized refresh (U25), then exactly one replay of this GET.
+                    user_replays += 1
+                    bearer = await self._user.access_token(stale=bearer)
+                    self._log(route, started, "user_token_refreshed", status, "user")
+                    continue
                 if status >= 500 and retries < GET_RETRIES:
                     self._log(route, started, "upstream_5xx_retry", status)
                     await self._sleep_fn(TRANSPORT_BACKOFF[retries])
@@ -321,6 +375,112 @@ class DiscordClient:
                 return self._finish(route, started, status, body, code, headers)
             finally:
                 lease.release()  # idempotent: the normal paths release earlier
+
+    async def _bearer(self, explicit: str | None) -> str | None:
+        """The Bearer token for one request: the explicit connect token, the user token, or None
+        for the bot client, which sends its own header (U23)."""
+        if self._user is None:
+            return None
+        if explicit is not None:
+            return explicit
+        return await self._user.access_token()
+
+    @staticmethod
+    def _request_headers(bearer: str | None) -> dict[str, str] | None:
+        return None if bearer is None else {"Authorization": f"Bearer {bearer}"}
+
+    async def post_form(self, kind: Literal["token", "revoke"], form: Mapping[str, str]) -> Any:
+        """POST a form to one of the two OAuth URLs (U22, U24). The only POST in the server.
+
+        Basic auth with the application id and client secret. Redirects are never followed and
+        the size cap applies. POSTs are never retried, so no code or refresh token is replayed;
+        only a 429 is waited out and retried under the normal rules. Returns the JSON object of a
+        2xx response. Errors: ``invalid_grant`` (400) is ``auth``; 5xx and transport errors are
+        ``unavailable``; other 4xx are ``upstream``. Only the OAuth error *code* is read.
+        """
+        if self._user is None:
+            raise DiscordMcpError("upstream", "The OAuth exchange is not configured")
+        url = self._token_url if kind == "token" else self._revoke_url
+        if urlsplit(url).netloc.lower() != self._host:
+            raise DiscordMcpError("upstream", "Discord request host is not the configured host")
+        route = Route.build(f"/oauth2/{kind}" if kind == "token" else "/oauth2/token/revoke")
+        basic = httpx.BasicAuth(self._oauth_id, self._oauth_secret)
+        replays = 0
+        while True:
+            lease = await self.limiter.acquire("POST", route.template, "")
+            started = self._clock()
+            try:
+                try:
+                    status, headers, raw = await self._send(
+                        url, method="POST", form=dict(form), auth=basic
+                    )
+                except _TooLarge:
+                    self._log(route, started, "upstream_response_too_large")
+                    raise DiscordMcpError(
+                        "upstream",
+                        "Discord response exceeded the configured size cap",
+                        hint=SIZE_CAP_HINT,
+                    ) from None
+                except httpx.TransportError:
+                    self._log(route, started, "transport_error")
+                    raise DiscordMcpError(
+                        "unavailable", "Discord is unreachable", retryable=True
+                    ) from None
+                except httpx.RequestError:
+                    self._log(route, started, "upstream_request_error")
+                    raise DiscordMcpError(
+                        "upstream", "Discord response could not be read"
+                    ) from None
+
+                lease.learn(headers)
+                body = _parse_json(raw)
+                if status == 429:
+                    replay = self._rate_limited(route, lease, started, body, headers, replays)
+                    lease.release()
+                    if replay:
+                        replays += 1
+                        continue
+                    raise DiscordMcpError(
+                        "rate_limited",
+                        "Discord rate limit reached for this route",
+                        http_status=429,
+                        retryable=True,
+                        retry_after=round(_retry_after_seconds(body, headers), 3),
+                    )
+                lease.release()
+                if 200 <= status < 300:
+                    if kind == "revoke":
+                        # Discord answers a successful revoke with an empty body (U18).
+                        self._log(route, started, "ok", status, "user")
+                        return {}
+                    if not isinstance(body, dict):
+                        self._log(route, started, "upstream_unexpected", status)
+                        raise DiscordMcpError("upstream", "Discord returned an unexpected response")
+                    self._log(route, started, "ok", status, "user")
+                    return body
+                error = body.get("error") if isinstance(body, dict) else None
+                if status == 400 and error == "invalid_grant":
+                    self._log(route, started, "auth", status, "user")
+                    raise DiscordMcpError(
+                        "auth",
+                        "Discord refused the stored grant",
+                        http_status=status,
+                        hint=CONNECT_HINT,
+                    )
+                if status >= 500:
+                    self._log(route, started, "upstream_5xx", status, "user")
+                    raise DiscordMcpError(
+                        "unavailable",
+                        "Discord returned a server error",
+                        http_status=status,
+                        retryable=True,
+                    )
+                self._log(route, started, "upstream_error", status, "user")
+                raise DiscordMcpError(
+                    "upstream", "Discord rejected the OAuth request", http_status=status
+                )
+            finally:
+                lease.release()
 
     async def _sleep_and_retry(self, lease: Lease, retries: int) -> None:
         """Release the lease before a transport backoff so other requests are not blocked."""
@@ -363,6 +523,18 @@ class DiscordClient:
                 "upstream",
                 "Discord answered with a redirect, which is not followed",
                 http_status=status,
+            )
+
+        if status == 401 and self._user is not None:
+            # U23: a user-token 401 never sets the bot hard-stop; it is the user's account state.
+            self.limiter.record_invalid()
+            self._log(route, started, "auth", status, "user")
+            raise DiscordMcpError(
+                "auth",
+                "The Discord account token was rejected",
+                code=code,
+                http_status=status,
+                hint=CONNECT_HINT,
             )
 
         if status == 401:

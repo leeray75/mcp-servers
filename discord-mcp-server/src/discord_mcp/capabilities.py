@@ -61,6 +61,15 @@ TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
 
 ALL_TOOL_NAMES: Final[tuple[str, ...]] = tuple(spec.name for spec in TOOL_SPECS)
 
+# U5: appended after the bot tools, in this order, only with DISCORD_USER_OAUTH on (U4 permitting).
+USER_OAUTH_TOOLS: Final[tuple[str, ...]] = (
+    "discord_account_status",
+    "connect_discord_account",
+    "disconnect_discord_account",
+    "list_my_guilds",
+    "get_guild_invite_link",
+)
+
 
 def intents_from_flags(flags: int) -> dict[Intent, bool]:
     """Privileged intent state from application flags (R6)."""
@@ -79,9 +88,12 @@ class ToolPlan:
     forced: tuple[str, ...] = field(default=())
     flags: int | None = None
     flags_source: str | None = None
+    # User OAuth (A3, U4-U5, U28): "off", "on(<account state>)" or "disabled(...)".
+    user_oauth: str = "off"
+    user_tools: tuple[str, ...] = field(default=())
 
 
-def plan_tools(settings: Settings, probe: BootProbe) -> ToolPlan:
+def plan_tools(settings: Settings, probe: BootProbe, user_state: str = "not_connected") -> ToolPlan:
     """Decide registration for every tool (R5-R7, A1-R5..R7).
 
     - Config disable wins over everything (``config_disabled``).
@@ -118,10 +130,26 @@ def plan_tools(settings: Settings, probe: BootProbe) -> ToolPlan:
             omitted.append((spec.name, "intent_disabled"))
         else:
             registered.append(spec.name)
+    user_oauth = "off"
+    user_tools: tuple[str, ...] = ()
+    if settings.discord_user_oauth:
+        # U4: a probed application id that differs from DISCORD_APPLICATION_ID disables the user
+        # tools and the OAuth routes. An unprobed id (auth or unreachable) is trusted.
+        mismatch = (
+            probe.application_id is not None
+            and probe.application_id != settings.discord_application_id
+        )
+        if mismatch:
+            user_oauth = "disabled(application_id_mismatch)"
+        else:
+            user_oauth = f"on({user_state})"
+            user_tools = USER_OAUTH_TOOLS
     return ToolPlan(
         registered=tuple(registered),
         omitted=tuple(omitted),
         forced=tuple(forced),
         flags=probe.flags,
         flags_source=probe.flags_source,
+        user_oauth=user_oauth,
+        user_tools=user_tools,
     )

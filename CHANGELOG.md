@@ -16,6 +16,9 @@ Each server keeps its own changelog for its code and behavior:
 
 ### Added
 
+- `discord-mcp-server`: optional user-OAuth guild discovery (`DISCORD_USER_OAUTH=true`, off by default, amendment A3):
+  five account tools to list the human's own servers and build a bot invite link, with loopback sign-in routes. No guild
+  content is readable with the user token. See `discord-mcp-server/docs/specs/user-oauth/SPEC.md`.
 - `discord-mcp-server` (read-only, guild-allowlisted Discord access over REST API v10; spec
   `discord-mcp-server/docs/SPEC.md` with amendment A1, port 8769). Initial build and fix round 1.
 - Monorepo combining `gmail-mcp-server`, `vision-mcp-server`, `sports-mcp-server` and

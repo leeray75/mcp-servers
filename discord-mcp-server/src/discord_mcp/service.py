@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Final
 
@@ -23,23 +25,39 @@ from discord_mcp.config import Settings
 from discord_mcp.discord_client import BootProbe, DiscordClient, Route
 from discord_mcp.errors import DiscordMcpError
 from discord_mcp.guard import Guard
+from discord_mcp.logging_setup import register_secret, unregister_secret
 from discord_mcp.models import (
+    AccountStatusResult,
     AuditLogResult,
     ChannelListResult,
     ChannelResult,
+    ConnectResult,
+    DisconnectResult,
     GuildResult,
     GuildSummary,
+    InviteLinkResult,
     ListGuildsResult,
+    ListMyGuildsResult,
     MemberListResult,
     MemberResult,
     MemberSearchResult,
     MessageListResult,
     MessageResult,
     Meta,
+    MyGuild,
+    OpenCommands,
     PinListResult,
     ReactionListResult,
     SearchResult,
     ThreadListResult,
+)
+from discord_mcp.oauth import (
+    ISSUER,
+    UserAuth,
+    authorize_url,
+    build_token,
+    code_challenge,
+    invite_url,
 )
 from discord_mcp.permissions import (
     CONNECT,
@@ -359,10 +377,13 @@ class DiscordService:
 
     # ------------------------------------------------------------ guilds
 
-    async def list_guilds(self) -> ListGuildsResult:
-        allowed = self.guard.allowed_guild_ids
-        found: list[GuildSummary] = []
-        seen: set[str] = set()
+    async def _guild_pages(self) -> tuple[list[Any], Fetched, bool]:
+        """The bot's unfiltered guild list (``/users/@me/guilds``, at most 5 pages), per page.
+
+        Shared by ``list_guilds`` and the user-OAuth ``bot_present`` flag (A3, U20), so both
+        read the same cache entries. Returns the raw items, the freshness and whether it ended.
+        """
+        items: list[Any] = []
         first: Fetched | None = None
         after: str | None = None
         exhausted = False
@@ -372,17 +393,9 @@ class DiscordService:
                 params.append(("after", after))
             route = Route.build("/users/@me/guilds")
             fetched = await self._cached(f"user_guilds:{after or ''}", route, params)
-            first = first or fetched
+            first = first if first is not None else fetched
             page = _as_list(fetched.value)
-            for raw in page:
-                if (
-                    isinstance(raw, dict)
-                    and isinstance(raw.get("id"), str)
-                    and raw["id"] in allowed
-                    and raw["id"] not in seen
-                ):
-                    seen.add(raw["id"])
-                    found.append(project.guild_summary(raw))
+            items.extend(page)
             if len(page) < GUILD_PAGE_LIMIT:
                 exhausted = True
                 break
@@ -391,11 +404,36 @@ class DiscordService:
             if after is None:
                 exhausted = True
                 break
+        if first is None:  # the loop always runs at least once
+            raise DiscordMcpError("upstream", UNEXPECTED_RESPONSE)
+        return items, first, exhausted
+
+    async def bot_guild_ids(self) -> frozenset[str]:
+        """Ids of every guild the bot is in, unfiltered (A3, U20). No request beyond the list."""
+        items, _first, _exhausted = await self._guild_pages()
+        return frozenset(
+            str(raw["id"])
+            for raw in items
+            if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+        )
+
+    async def list_guilds(self) -> ListGuildsResult:
+        allowed = self.guard.allowed_guild_ids
+        found: list[GuildSummary] = []
+        seen: set[str] = set()
+        items, first, exhausted = await self._guild_pages()
+        for raw in items:
+            if (
+                isinstance(raw, dict)
+                and isinstance(raw.get("id"), str)
+                and raw["id"] in allowed
+                and raw["id"] not in seen
+            ):
+                seen.add(raw["id"])
+                found.append(project.guild_summary(raw))
         if not exhausted:
             logger.warning("guild list truncated at the page cap", extra={"outcome": "truncated"})
         missing = sorted(allowed - seen)
-        if first is None:  # the loop always runs at least once
-            raise DiscordMcpError("upstream", UNEXPECTED_RESPONSE)
         return ListGuildsResult(
             meta=_meta_of(first, "guilds"),
             guilds=found,
@@ -826,3 +864,312 @@ class DiscordService:
             has_more=has_more,
             next_cursor=cursor,
         )
+
+
+# ------------------------------------------------------------ user OAuth (amendment A3)
+
+ADMINISTRATOR_BIT: Final = 1 << 3
+MANAGE_GUILD_BIT: Final = 1 << 5
+USER_SCOPES: Final = frozenset({"identify", "guilds"})
+CONNECT_INSTRUCTIONS: Final = (
+    "Open sign_in_url in a browser, approve the Discord sign-in, then call "
+    "discord_account_status to confirm the account is connected."
+)
+INVITE_NOTE: Final = (
+    "The human needs the Manage Server permission in that guild. Add the guild id to "
+    "DISCORD_ALLOWED_GUILD_IDS in .env, then run scripts/restart.sh --recreate."
+)
+
+
+def _iso(epoch: float) -> str:
+    return to_iso(datetime.fromtimestamp(epoch, UTC))
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _text(value: Any) -> str:
+    return str(value) if isinstance(value, str | int) and not isinstance(value, bool) else "0"
+
+
+def _permission_bits(value: str) -> int:
+    return int(value) if value.isascii() and value.isdigit() else 0
+
+
+def _my_guild(
+    raw: dict[str, Any],
+    allowed: frozenset[str],
+    bot_ids: frozenset[str] | None,
+    with_counts: bool,
+) -> MyGuild:
+    """One of the human's guilds with the derived flags of U20. Counts only when requested."""
+    guild_id = str(raw["id"])
+    owner = raw.get("owner") is True
+    permissions = _text(raw.get("permissions"))
+    fields: dict[str, Any] = {
+        "id": guild_id,
+        "name": raw.get("name") if isinstance(raw.get("name"), str) else None,
+        "icon": raw.get("icon") if isinstance(raw.get("icon"), str) else None,
+        "owner": owner,
+        "permissions": permissions,
+        "features": [str(feature) for feature in _as_list(raw.get("features"))],
+        "allowlisted": guild_id in allowed,
+        "bot_present": None if bot_ids is None else guild_id in bot_ids,
+        "can_add_bot": owner
+        or bool(_permission_bits(permissions) & (ADMINISTRATOR_BIT | MANAGE_GUILD_BIT)),
+    }
+    if with_counts:
+        fields["approximate_member_count"] = _int_or_none(raw.get("approximate_member_count"))
+        fields["approximate_presence_count"] = _int_or_none(raw.get("approximate_presence_count"))
+    return MyGuild(**fields)
+
+
+class UserOAuthService:
+    """User-OAuth guild discovery (A3): the five tools (U16-U21) and sign-in completion (U12-U14).
+
+    Uses the user-side client for every call that carries the human's token (``/users/@me``,
+    ``/users/@me/guilds``, the OAuth token, revoke and refresh) and the bot service only for the
+    ``bot_present`` flag. Nothing here reads guild content (section 1.1 of the amendment).
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        auth: UserAuth,
+        client: DiscordClient,
+        bot: DiscordService,
+        *,
+        now: Callable[[], float] = time.time,
+    ) -> None:
+        self._settings = settings
+        self._auth = auth
+        self._client = client
+        self._bot = bot
+        self._now = now
+
+    # ------------------------------------------------------------ tools
+
+    def status(self) -> AccountStatusResult:
+        """U16: local state only, no network request, never a token value."""
+        fields: dict[str, Any] = {
+            "enabled": True,
+            "state": self._auth.state,
+            "pending_sign_in": self._auth.pending.pending,
+            "last_error": self._auth.last_error,
+            "sign_in_url": self._settings.sign_in_url,
+            "redirect_uri": self._settings.redirect_uri,
+        }
+        token = self._auth.token
+        if token is not None:
+            fields.update(
+                user_id=token.user_id,
+                username=token.username,
+                scopes=token.scope.split(),
+                expires_at=_iso(token.expires_at),
+                connected_at=_iso(token.connected_at),
+            )
+        return AccountStatusResult(**fields)
+
+    def connect(self, reconnect: bool) -> ConnectResult:
+        """U17 plain result. The server decides on elicitation. Sends nothing, creates no state."""
+        token = self._auth.token
+        if token is not None and not reconnect:
+            return ConnectResult(
+                state="already_connected",
+                username=token.username,
+                sign_in_url=self._settings.sign_in_url,
+            )
+        url = self._settings.sign_in_url
+        return ConnectResult(
+            state="authorization_required",
+            sign_in_url=url,
+            redirect_uri=self._settings.redirect_uri,
+            instructions=CONNECT_INSTRUCTIONS,
+            open_commands=OpenCommands(
+                windows=f'start "" "{url}"', macos=f"open '{url}'", linux=f"xdg-open '{url}'"
+            ),
+        )
+
+    async def disconnect(self) -> DisconnectResult:
+        """U18: best-effort revoke, then always delete the local token and pending flow."""
+        self._auth.pending.clear()
+        # Under the refresh lock (m6): a refresh in flight finishes first, and no refresh can
+        # re-create the token file after it is deleted.
+        async with self._auth.lock:
+            token = self._auth.token
+            if token is None:
+                if self._auth.token_file_invalid:
+                    self._auth.forget()
+                return DisconnectResult(state="not_connected")
+            revoked = await self._revoke_value(
+                token.refresh_token.get_secret_value(), "refresh_token"
+            )
+            self._auth.last_error = None if revoked else "revoke_failed"
+            self._auth.forget()
+        return DisconnectResult(state="disconnected", revoked=revoked)
+
+    async def list_my_guilds(self, with_counts: bool) -> ListMyGuildsResult:
+        """U20: the human's guilds with derived flags. Not allowlist-gated; never cached."""
+        raw_guilds, truncated = await self._my_guild_pages(with_counts)
+        bot_ids: frozenset[str] | None
+        try:
+            bot_ids = await self._bot.bot_guild_ids()
+            known = True
+        except DiscordMcpError:
+            bot_ids, known = None, False
+        allowed = self._settings.guild_ids
+        guilds = [_my_guild(raw, allowed, bot_ids, with_counts) for raw in raw_guilds]
+        return ListMyGuildsResult(
+            guilds=guilds, count=len(guilds), truncated=truncated, bot_guilds_known=known
+        )
+
+    def get_guild_invite_link(self, guild_id: str) -> InviteLinkResult:
+        """U21: the bot invite URL for one guild. No request, no token needed."""
+        validate_snowflake(guild_id, "guild_id")
+        app_id = self._settings.discord_application_id
+        if not app_id:
+            raise DiscordMcpError("validation", "DISCORD_APPLICATION_ID is not set")
+        return InviteLinkResult(
+            guild_id=guild_id, url=invite_url(app_id, guild_id), note=INVITE_NOTE
+        )
+
+    # ------------------------------------------------------------ sign-in completion
+
+    async def complete_sign_in(
+        self,
+        *,
+        state: str | None,
+        iss: str | None,
+        code: str | None,
+        error: str | None,
+    ) -> bool:
+        """U11-U14: validate the callback and exchange the code. True when a token was stored.
+
+        The pending flow is claimed first, so any callback consumes it. A refusal sends no Discord
+        request. Any failure after the exchange is recorded as ``exchange_failed``.
+        """
+        claimed = self._auth.pending.claim(state)
+        if isinstance(claimed, str):
+            self._auth.last_error = "callback_refused"
+            return False
+        # The claimed flow's verifier stays redactable until this call ends (n2); the code too.
+        try:
+            if error is not None or iss != ISSUER or not code:
+                self._auth.last_error = "callback_refused"
+                return False
+            register_secret(code)
+            try:
+                await self._exchange_and_store(code, claimed.verifier)
+            except DiscordMcpError:
+                self._auth.last_error = "exchange_failed"
+                return False
+            self._auth.last_error = None
+            return True
+        finally:
+            self._auth.pending.release(claimed)
+            if code:
+                unregister_secret(code)
+
+    def begin_sign_in(self) -> str:
+        """U8: start a fresh pending flow and return the Discord authorize URL for the redirect."""
+        flow = self._auth.pending.start()
+        challenge = code_challenge(flow.verifier) if self._settings.discord_oauth_pkce else None
+        return authorize_url(
+            self._settings.discord_application_id or "",
+            self._settings.redirect_uri,
+            flow.state,
+            challenge,
+        )
+
+    async def refresh_exchange(self, refresh_token: str) -> Mapping[str, Any]:
+        """The refresh grant used by :class:`UserAuth` (U25). Raises as ``post_form`` does."""
+        body: Mapping[str, Any] = await self._client.post_form(
+            "token",
+            {"grant_type": "refresh_token", "refresh_token": refresh_token},
+        )
+        return body
+
+    # ------------------------------------------------------------ helpers
+
+    async def _exchange_and_store(self, code: str, verifier: str) -> None:
+        form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": self._settings.redirect_uri,
+        }
+        if self._settings.discord_oauth_pkce:
+            form["code_verifier"] = verifier
+        now = self._now()
+        # A failure of the exchange itself granted nothing, so nothing is revoked (U13).
+        body = await self._client.post_form("token", form)
+        try:
+            token = build_token(body, now=now, user_id="", username="", connected_at=now)
+        except DiscordMcpError:
+            # U13: a malformed response may still carry a token; revoke whichever one it has.
+            await self._revoke_raw_body(body)
+            raise
+        # U13 (A3.1): every failure after a successful exchange revokes the new grant once,
+        # best-effort.
+        # The previous grant is never revoked on reconnect (D29).
+        try:
+            if not set(token.scope.split()) >= USER_SCOPES:
+                raise DiscordMcpError(
+                    "upstream", "Discord did not grant the identify and guilds scopes"
+                )
+            me = await self._client.get(
+                Route.build("/users/@me"),
+                access_token=token.access_token.get_secret_value(),
+            )
+            profile = _as_dict(me.body)
+            user_id, username = profile.get("id"), profile.get("username")
+            if not isinstance(user_id, str) or not isinstance(username, str):
+                raise DiscordMcpError("upstream", UNEXPECTED_RESPONSE)
+            # n3 (A3.2 round 2): install under the refresh lock, so an in-flight refresh of the old
+            # grant cannot finish after the new token is stored and overwrite it.
+            async with self._auth.lock:
+                self._auth.install(replace(token, user_id=user_id, username=username))
+        except DiscordMcpError:
+            await self._revoke_value(token.refresh_token.get_secret_value(), "refresh_token")
+            raise
+
+    async def _revoke_raw_body(self, body: Any) -> None:
+        """Revoke the refresh token, or else the access token, of an unparseable response."""
+        if not isinstance(body, dict):
+            return
+        refresh, access = body.get("refresh_token"), body.get("access_token")
+        if isinstance(refresh, str) and refresh:
+            await self._revoke_value(refresh, "refresh_token")
+        elif isinstance(access, str) and access:
+            await self._revoke_value(access, "access_token")
+
+    async def _revoke_value(self, value: str, hint: str) -> bool:
+        """Best-effort revoke of one token (U18). Never raises; True when Discord accepted it."""
+        try:
+            await self._client.post_form("revoke", {"token": value, "token_type_hint": hint})
+        except DiscordMcpError:
+            return False
+        return True
+
+    async def _my_guild_pages(self, with_counts: bool) -> tuple[list[dict[str, Any]], bool]:
+        """Pages ``/users/@me/guilds`` with the user token: up to 5 pages of 200 (U20)."""
+        out: list[dict[str, Any]] = []
+        after: str | None = None
+        for _ in range(GUILD_MAX_PAGES):
+            params: list[tuple[str, str]] = [("limit", str(GUILD_PAGE_LIMIT))]
+            if after is not None:
+                params.append(("after", after))
+            if with_counts:
+                params.append(("with_counts", "true"))
+            response = await self._client.get(Route.build("/users/@me/guilds"), params)
+            page = _as_list(response.body)
+            out.extend(
+                raw for raw in page if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+            )
+            if len(page) < GUILD_PAGE_LIMIT:
+                return out, False
+            last = page[-1]
+            after = str(last["id"]) if isinstance(last, dict) and last.get("id") else None
+            if after is None:
+                return out, True
+        return out, True

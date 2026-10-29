@@ -1,0 +1,13 @@
+# Optional override for user OAuth guild discovery (amendment A3). Applied only when DISCORD_USER_OAUTH
+# is true in .env: scripts/lib/common.sh then adds "-f docker-compose.yml -f docker-compose.oauth.yml"
+# to every compose call. Without it, docker-compose.yml is used unchanged and mounts no host folders.
+#
+# It adds exactly one writable host folder, ./data, for the user's token file (mode 0600, git-ignored).
+# The root filesystem stays read-only; /data is the only writable path besides the tmpfs /tmp.
+
+services:
+  discord-mcp:
+    environment:
+      DISCORD_OAUTH_TOKEN_FILE: /data/discord_user_token.json
+    volumes:
+      - ./data:/data

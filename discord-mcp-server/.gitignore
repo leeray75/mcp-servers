@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# User OAuth token folder (docker-compose.oauth.yml mounts it; the token file is mode 0600)
+data/
 
 # Python
 __pycache__/

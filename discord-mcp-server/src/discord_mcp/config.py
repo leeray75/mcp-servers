@@ -11,7 +11,15 @@ import re
 from typing import Annotated, Final
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    ValidationError,
+    ValidationInfo,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from discord_mcp.snowflake import is_snowflake
@@ -21,6 +29,12 @@ MIN_AUTH_TOKEN_LENGTH: Final = 32
 MAX_ALLOWED_GUILDS: Final = 100
 DEFAULT_API_BASE: Final = "https://discord.com/api/v10"
 DEFAULT_USER_AGENT: Final = "DiscordBot (https://github.com/leeray75/mcp-servers, 0.1.0)"
+_OAUTH_DEFAULTS: Final[dict[str, object]] = {
+    "host_port": 8769,
+    "discord_oauth_url_elicitation": True,
+    "discord_oauth_pkce": True,
+}
+DEFAULT_TOKEN_FILE: Final = "/data/discord_user_token.json"  # noqa: S105 - a path, not a secret
 _BOT_TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+){2}$")
 _USER_AGENT_RE: Final = re.compile(r"^DiscordBot \(\S+, \S+\)$")
 _API_PATH_RE: Final = re.compile(r"^/api/v([0-9]+)$")
@@ -58,6 +72,16 @@ class Settings(BaseSettings):
 
     # --- optional identity check (section 12) ---
     discord_application_id: str | None = None
+
+    # --- user OAuth guild discovery (A3, U1). Secret, path and switches are read and checked only
+    # when DISCORD_USER_OAUTH is true (model validator below). HOST_PORT is bounded only when the
+    # switch is on (A3.1 U3). ---
+    discord_user_oauth: bool = False
+    discord_oauth_client_secret: SecretStr | None = None
+    host_port: Annotated[int, Field(ge=1, le=65535)] = 8769
+    discord_oauth_token_file: str = DEFAULT_TOKEN_FILE
+    discord_oauth_url_elicitation: bool = True
+    discord_oauth_pkce: bool = True
 
     # --- Discord HTTP (R3) ---
     discord_api_base: str = DEFAULT_API_BASE
@@ -149,6 +173,25 @@ class Settings(BaseSettings):
             raise ValueError("DISCORD_USER_AGENT must look like 'DiscordBot (<url>, <version>)'")
         return value.strip()
 
+    @field_validator(
+        "host_port", "discord_oauth_url_elicitation", "discord_oauth_pkce", mode="wrap"
+    )
+    @classmethod
+    def _oauth_ignored_when_off(
+        cls, value: object, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
+    ) -> object:
+        """A3.1 (U3): a malformed A3 setting never stops an off-mode server; it takes its default.
+
+        With the switch on the error is raised as usual (U1). ``discord_user_oauth`` is declared
+        before these fields, so it is already validated in ``info.data``.
+        """
+        try:
+            return handler(value)
+        except ValidationError:
+            if info.data.get("discord_user_oauth"):
+                raise
+            return _OAUTH_DEFAULTS[str(info.field_name)]
+
     @field_validator("log_level", mode="after")
     @classmethod
     def _check_log_level(cls, value: str) -> str:
@@ -156,6 +199,35 @@ class Settings(BaseSettings):
         if level not in _LOG_LEVELS:
             raise ValueError(f"LOG_LEVEL must be one of {', '.join(sorted(_LOG_LEVELS))}")
         return level
+
+    @model_validator(mode="after")
+    def _check_user_oauth(self) -> Settings:
+        """U1-U2: with the switch on, the client secret, application id and token path are required.
+
+        Errors name the field and never the value. With the switch off nothing here is checked.
+        """
+        if not self.discord_user_oauth:
+            return self
+        if self.discord_oauth_client_secret is None:
+            raise ValueError(
+                "DISCORD_OAUTH_CLIENT_SECRET is required when DISCORD_USER_OAUTH is true"
+            )
+        _check_secret(self.discord_oauth_client_secret, "DISCORD_OAUTH_CLIENT_SECRET")
+        if not self.discord_application_id:
+            raise ValueError("DISCORD_APPLICATION_ID is required when DISCORD_USER_OAUTH is true")
+        if not self.discord_oauth_token_file.startswith("/"):
+            raise ValueError("DISCORD_OAUTH_TOKEN_FILE must be an absolute path")
+        return self
+
+    @property
+    def redirect_uri(self) -> str:
+        """The exact OAuth redirect URI (U10), derived from HOST_PORT (D26)."""
+        return f"http://127.0.0.1:{self.host_port}/oauth/callback"
+
+    @property
+    def sign_in_url(self) -> str:
+        """The server's own sign-in page, opened in a browser (U8, U17)."""
+        return f"http://127.0.0.1:{self.host_port}/oauth/start"
 
     @property
     def guild_ids(self) -> frozenset[str]:
@@ -174,6 +246,7 @@ def load_settings() -> Settings:
         return Settings()  # type: ignore[call-arg]
     except ValidationError as exc:
         problems = "; ".join(
-            f"{'.'.join(str(p).upper() for p in err['loc'])}: {err['msg']}" for err in exc.errors()
+            f"{'.'.join(str(p).upper() for p in err['loc']) or 'CONFIGURATION'}: {err['msg']}"
+            for err in exc.errors()
         )
         raise ConfigError(f"Invalid configuration: {problems}") from None
