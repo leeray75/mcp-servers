@@ -1,0 +1,27 @@
+# Secrets and runtime state - NEVER commit
+.env
+.env.*
+!.env.example
+# User OAuth token folder (docker-compose.oauth.yml mounts it; the token file is mode 0600)
+data/
+# TLS material for the OAuth redirect (scripts/make-cert.sh writes it; docker-compose.tls.yml mounts
+# it read-only). Holds a private key - it must never be reachable from git.
+certs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Tooling caches and coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
