@@ -1,0 +1,15 @@
+# Spec review, round 2: docs/specs/token-volume (SPEC.md, tasks.md)
+
+Reviewer: read-only. Verdict: **APPROVED** (0 blockers, 0 majors, 3 minors). Minors may be fixed during implementation or at the approval gate.
+
+## Round 1 dispositions verified from disk
+- M1/M4: both text-scan tests are gone from SPEC §6 and tasks.md B; the script-removal grep is a reviewer checklist item (tasks.md J). The earlier self-contradiction (test vs. the setup.sh message naming `docker volume rm`) no longer exists. Accepted for a repo whose goal is less machinery: no script currently contains the forbidden strings (grep), and review owns it.
+- M2/M3: one helper (strip blank/`#` lines and trailing ` #` comments; zero-indent keys; items under `services:` -> `twitch-mcp:` -> `volumes:`) and three tests. Specific enough to implement without more design. A commented-out `# - ./data:/data` cannot appear; a host path, `./` source or long-form `type: bind` entry makes `service_volumes == ["twitch-mcp-data:/data"]` fail; the base test checks no top-level `volumes` and an empty list. V1 and V3 are verified with no remaining false pass on the realistic edits, apart from m1 below. V2's target is covered by the equality assertion; the env var by review/live check (stated honestly).
+- Base compose has no ` #` inside values that would confuse the stripper (healthcheck string checked).
+- m1-m6: oauth.py:367/365/419, setup.sh 238-244 (comment at 238, mkdir 241, chown 244), Dockerfile:45 runtime stage, test_deployment.py:43/80, test_oauth_units.py:152, test_server.py:735, CLAUDE.md "Tool set" 23+2=25 (CLAUDE.md:105-108) and the 30 s timeout rule (CLAUDE.md:38) are all real. V8 no-change lines (README:146, CLAUDE.md:24/157) correctly contain no mount wording. Operator notes and a single "Gate items" paragraph are present; §11 is "None."; all AGENTS.md §4 sections present; Status Draft.
+- No scope creep found: no code change, no new dependency, no new scripts.
+
+## Minors
+- m1. Flow-style YAML is a residual false pass in the base-file test. SPEC.md:112-115 only recognises block lists, so `volumes: ["./data:/data"]` (or a top-level `volumes: {}`) yields `service_volumes == []` and no `volumes` top key (not "ending in `:`"). Cheap fix, still one helper: also fail if any line matches `^\s*volumes:\s*\S` in the base file (or have the helper return inline values). Realistic risk is low.
+- m2. Line citations into docs/SPEC.md are off by one (file is dirty, Amendment 6 line added): R2 is at 127-129 (spec 126-127), R48 at 260-261 (spec 259), the §6.1 Dockerfile/compose line at 323 (spec 322). SPEC.md:6,85-style cites and tasks.md H; tell the implementer to locate by R-number/section.
+- m3. `test_oauth_override_declares_the_named_volume` checks `name: twitch-mcp-data` only as "the line"; require it to sit inside the `twitch-mcp-data:` block (indentation) so it cannot be satisfied elsewhere. Also the existing docstring/message of `test_compose_mounts_no_host_directory_by_default` mention `./data`; since the body is rewritten, say the docstring is reworded too.

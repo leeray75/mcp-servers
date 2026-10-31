@@ -1,0 +1,53 @@
+# Twitch MCP server. Start with scripts/start.sh (or scripts/start.ps1 on Windows).
+#
+# Security posture (R1/R2): the published port is bound to host loopback ONLY, the root filesystem
+# is read-only, all Linux capabilities are dropped, and the container runs as UID 10001. The only
+# outbound traffic it needs is HTTPS to Twitch's API hosts (api.twitch.tv and id.twitch.tv). It
+# stores nothing on disk and mounts no host folders unless user OAuth is enabled, in which case
+# docker-compose.oauth.yml adds exactly one named volume (twitch-mcp-data at /data), or TLS is
+# configured, in which case docker-compose.tls.yml adds exactly one read-only mount (./certs). Do not change the port mapping
+# to 0.0.0.0.
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1.0
+
+services:
+  twitch-mcp:
+    <<: *hardening
+    image: twitch-mcp-server:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: twitch-mcp
+    env_file: .env
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8770}:8000"
+    restart: unless-stopped
+    healthcheck:
+      # Same adaptive probe as the Dockerfile HEALTHCHECK: it follows the server's transport, so a
+      # TLS-enabled container is probed over https (T3, T-D8). Verification is disabled for this
+      # loopback self-probe only — the certificate is the operator's own local-CA leaf.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,ssl,sys,urllib.request as u; t=os.environ.get('TWITCH_TLS_CERT_FILE','').strip(); s='https' if t else 'http'; c=ssl._create_unverified_context() if t else None; sys.exit(0 if u.urlopen(s+'://127.0.0.1:8000/healthz',timeout=3,context=c).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 2s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

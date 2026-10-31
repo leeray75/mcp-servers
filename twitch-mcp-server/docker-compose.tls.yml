@@ -1,0 +1,19 @@
+# Optional override for HTTPS (docs/specs/tls-oauth-redirect, T-D1/T-D7/T11). Applied only when
+# TWITCH_TLS_CERT_FILE and TWITCH_TLS_KEY_FILE are set in .env: scripts/lib/common.sh then adds
+# "-f docker-compose.yml -f docker-compose.tls.yml" to every compose call. Without it the base file
+# is used unchanged, no folder is mounted, and the server answers plain HTTP exactly as before (T2).
+#
+# It adds exactly one mount, ./certs, read-only. The root filesystem stays read-only and /certs is
+# never writable, so the process cannot rewrite the key it serves (T11). Generate the material with
+# scripts/make-cert.sh (Windows twin: scripts/make-cert.ps1, which also trusts the CA for you).
+#
+# The two paths must sit under /certs, because that is the only place this file makes readable.
+# The server does not check the key's permissions, so keep the key owner-only on the host.
+
+services:
+  twitch-mcp:
+    environment:
+      TWITCH_TLS_CERT_FILE: ${TWITCH_TLS_CERT_FILE:-/certs/server.crt}
+      TWITCH_TLS_KEY_FILE: ${TWITCH_TLS_KEY_FILE:-/certs/server.key}
+    volumes:
+      - ./certs:/certs:ro

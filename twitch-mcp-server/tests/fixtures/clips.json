@@ -1,0 +1,21 @@
+"""Synthetic fixture: /clips payload (no real ids or URLs; R55)."""
+{
+  "data": [
+    {
+      "id": "ClipOne",
+      "broadcaster_id": "123456789",
+      "broadcaster_name": "OperatorLogin",
+      "creator_id": "987654321",
+      "creator_name": "AnotherUser",
+      "video_id": null,
+      "game_id": "509658",
+      "language": "en",
+      "title": "A synthetic clip",
+      "duration": 30.0,
+      "created_at": "2026-10-01T00:00:00Z",
+      "view_count": 7,
+      "thumbnail_url": "https://clips-media-assets.example/thumb.jpg"
+    }
+  ],
+  "pagination": {"cursor": "eyJiIjpudWxsLCJhIjoiMTAwIn0="}
+}
