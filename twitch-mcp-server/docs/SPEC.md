@@ -9,6 +9,7 @@
 **Amendment 4:** 2026-10-31 (approved by: human) — see docs/specs/oauth-iss/SPEC.md.
 **Amendment 5:** 2026-10-31 (approved by: human) — see docs/specs/oauth-wire/SPEC.md.
 **Amendment 6:** 2026-10-31 (approved by: human) — see docs/specs/token-volume/SPEC.md.
+**Amendment 7:** 2026-10-31 (approved by: human) — see docs/specs/scope-401/SPEC.md.
 **Process:** [../../AGENTS.md](../../AGENTS.md) (SDD). This file becomes authoritative for the server once approved;
 `AGENTS.md` governs process, this file governs technical invariants.
 
@@ -183,6 +184,9 @@ change like any other requirement:
   not queued.
 - **R24** — The first `401` from `TWITCH_API_BASE` opens a circuit that stops all further upstream traffic for the
   process lifetime; subsequent calls return `kind=unauthenticated` without a request. Only a process restart clears it.
+  **Superseded in part by Amendment 7 (`docs/specs/scope-401/SPEC.md`, C3–C9):** the circuit stops Helix API calls of
+  the affected token class (app and user circuits are separate); token, validate and revoke endpoints are exempt, and
+  the mint works under an open app circuit. R50 is unchanged.
 
 ### 5.5 Authorization: reads
 
@@ -245,9 +249,12 @@ change like any other requirement:
 - **R43** — All tool failures are `isError` tool results carrying `{kind, message, code, http_status, retryable,
   retry_after, hint}`. JSON-RPC errors are reserved for protocol faults and unexpected exceptions (generic message).
 - **R44** — `kind` derives from HTTP status plus Twitch's numeric/error code, never from message text.
+  *Amended by Amendment 7 (C1):* `message` is read only to recognise a missing-scope phrase on a `401`/`403`.
 - **R45** — A `401`/`403` whose body names a missing scope returns `kind=permission`, `retryable=false`, and a `hint`
   containing the scope string Twitch named plus the scopes the token actually holds. The message says
   "not authorized", never "no results" — an empty list always means genuinely empty.
+  *Amended by Amendment 7 (C1, C2, C-D10):* the scope check runs before any circuit decision and reads `message`
+  as well; the hint is sanitised; the "holds" sentence appears only when the body carries a scopes list.
 
 ### 5.10 OAuth (user identity)
 
@@ -356,6 +363,9 @@ call_tool(update_channel, {broadcaster_id, title, confirm?})
   └─ client.patch(...)  ← exactly once, never retried (R16)
        └─ 401 → open circuit (R24) · 429 → kind=rate_limited, no replay · 4xx → kind from code · transport fail → kind=unknown_outcome
 ```
+
+*Amended by Amendment 7 (C6):* on a write, a missing-scope `401` is `kind=permission` and opens no circuit; a non-scope
+`401` is `kind=unknown_outcome` (R16) and opens that token class's circuit. Writes are never re-issued.
 
 The `kind=confirmation_required` result is deliberately a **successful** (non-`isError`) tool result: it is the normal
 first turn of every write, and its plan text is what the human or the agent reads before deciding.

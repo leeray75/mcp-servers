@@ -18,9 +18,11 @@ import pytest
 from tests.twitch_fakes import FakeClock, helix_headers
 from twitch_mcp.errors import TwitchMcpError
 from twitch_mcp.ratelimit import (
+    APP_CLASS,
     RATELIMIT_HEADER_LIMIT,
     RATELIMIT_HEADER_REMAINING,
     RATELIMIT_HEADER_RESET,
+    USER_CLASS,
     RateLimiter,
     route_key,
 )
@@ -424,58 +426,65 @@ def test_route_key_includes_the_token_type() -> None:
     assert route_key("app", "GET", "/channels", "1") == "app:GET /channels 1"
 
 
-# ------------------------------------------------------------------ R24: the 401 circuit
+# ------------------------------------------------------------------ R24 / C3: the per-class 401 circuit
 
 
-async def test_401_circuit_stops_all_upstream_traffic(fclock: FakeClock) -> None:
+async def test_401_circuit_stops_its_own_token_class_only(fclock: FakeClock) -> None:
     limiter = build_limiter(fclock)
-    assert limiter.auth_failed is False
-    limiter.trip_auth()
-    assert limiter.auth_failed is True
-    for token_type in ("app", "user"):
-        for method, template in (("GET", "/channels"), ("POST", "/chat/messages")):
-            with pytest.raises(TwitchMcpError) as info:
-                await limiter.acquire(token_type, method, template)
-            error = info.value
-            assert error.kind == "unauthenticated"
-            assert error.http_status == 401
-            assert error.retryable is False
+    assert limiter.auth_failed(APP_CLASS) is False
+    limiter.trip_auth(USER_CLASS)
+    assert limiter.auth_failed(USER_CLASS) is True
+    assert limiter.auth_failed(APP_CLASS) is False
+    for method, template in (("GET", "/channels"), ("POST", "/chat/messages")):
+        with pytest.raises(TwitchMcpError) as info:
+            await limiter.acquire(USER_CLASS, method, template)
+        error = info.value
+        assert error.kind == "unauthenticated"
+        assert error.http_status == 401
+        assert error.retryable is False
+    lease = await limiter.acquire(APP_CLASS, "GET", "/channels")
+    lease.release()
 
 
 async def test_circuit_survives_every_attempt_and_logs_once(
     fclock: FakeClock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """R24: only a process restart clears it, so repeated trips log exactly once."""
+    """R24: only a restart clears the app class, so repeated trips log exactly once per class."""
     limiter = build_limiter(fclock)
     with caplog.at_level(logging.ERROR):
         for _ in range(5):
-            limiter.trip_auth()
-    assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 1
+            limiter.trip_auth(APP_CLASS)
+        for _ in range(5):
+            limiter.trip_auth(USER_CLASS)
+    assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 2
     with pytest.raises(TwitchMcpError):
-        await limiter.acquire("app", "GET", "/users")
-    assert limiter.auth_failed is True
+        await limiter.acquire(APP_CLASS, "GET", "/users")
+    assert limiter.auth_failed(APP_CLASS) is True
 
 
 async def test_circuit_opens_before_any_wait_and_never_sleeps(fclock: FakeClock) -> None:
     limiter = build_limiter(fclock, max_wait=1.0)
-    lease = await limiter.acquire("app", "GET", "/clips")
+    lease = await limiter.acquire(APP_CLASS, "GET", "/clips")
     learn(lease, 10, 0, 400, fclock)
     lease.release()
-    limiter.trip_auth()
+    limiter.trip_auth(APP_CLASS)
     with pytest.raises(TwitchMcpError) as info:
-        await limiter.acquire("app", "GET", "/clips")
+        await limiter.acquire(APP_CLASS, "GET", "/clips")
     assert info.value.kind == "unauthenticated"
     assert fclock.sleeps == []
 
 
-async def test_the_auth_listener_fires_exactly_once(fclock: FakeClock) -> None:
-    """R30 trigger 3: the cache drop runs on the first trip and never again (the circuit never heals)."""
+async def test_the_auth_listener_fires_once_per_class(fclock: FakeClock) -> None:
+    """C3 / R30 trigger 3: the cache drop runs on each class's first trip and never again."""
     limiter = build_limiter(fclock)
     calls: list[int] = []
     limiter.set_auth_failure_listener(lambda: calls.append(1))
     for _ in range(5):
-        limiter.trip_auth()
-    assert len(calls) == 1, "one trip to announce, so the caches are dropped exactly once"
+        limiter.trip_auth(APP_CLASS)
+    assert len(calls) == 1
+    for _ in range(5):
+        limiter.trip_auth(USER_CLASS)
+    assert len(calls) == 2, "the user class announces its own first open"
 
 
 async def test_a_raising_listener_never_masks_the_401(
@@ -489,27 +498,39 @@ async def test_a_raising_listener_never_masks_the_401(
 
     limiter.set_auth_failure_listener(explode)
     with caplog.at_level(logging.ERROR):
-        limiter.trip_auth()
-    assert limiter.auth_failed is True, "the circuit opens even when the hook explodes"
+        limiter.trip_auth(APP_CLASS)
+    assert limiter.auth_failed(APP_CLASS) is True, "the circuit opens even when the hook explodes"
     with pytest.raises(TwitchMcpError) as info:
-        await limiter.acquire("app", "GET", "/users")
+        await limiter.acquire(APP_CLASS, "GET", "/users")
     assert info.value.kind == "unauthenticated"
     assert info.value.http_status == 401
     assert any("listener raised" in record.getMessage() for record in caplog.records)
 
 
 async def test_the_listener_cannot_recurse_through_the_circuit(fclock: FakeClock) -> None:
-    """Re-entrancy: a hook that trips the circuit again must hit the latch, not loop or double-fire."""
+    """Re-entrancy: a hook that trips the same class again must hit the latch, not loop."""
     limiter = build_limiter(fclock)
     depth: list[int] = []
 
     def reentrant() -> None:
         depth.append(len(depth))
-        limiter.trip_auth()
+        limiter.trip_auth(APP_CLASS)
 
     limiter.set_auth_failure_listener(reentrant)
-    limiter.trip_auth()
+    limiter.trip_auth(APP_CLASS)
     assert len(depth) == 1, "the latch is set before the hook runs, so the inner trip is a no-op"
+
+
+async def test_reset_user_circuit_clears_only_the_user_class(fclock: FakeClock) -> None:
+    """C7: the user circuit clears on a stored token; the app circuit never does."""
+    limiter = build_limiter(fclock)
+    limiter.trip_auth(APP_CLASS)
+    limiter.trip_auth(USER_CLASS)
+    limiter.reset_user_circuit()
+    assert limiter.auth_failed(USER_CLASS) is False
+    assert limiter.auth_failed(APP_CLASS) is True
+    lease = await limiter.acquire(USER_CLASS, "GET", "/channels")
+    lease.release()
 
 
 # ------------------------------------------------------------------ misc contract

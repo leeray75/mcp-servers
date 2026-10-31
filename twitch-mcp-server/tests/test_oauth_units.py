@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from tests.core_fakes import APP_ID, APP_TOKEN, USER_TOKEN, make_client
 from tests.twitch_fakes import OPERATOR
 from twitch_mcp.errors import TwitchMcpError
 from twitch_mcp.oauth import (
@@ -28,6 +29,9 @@ from twitch_mcp.oauth import (
     build_token,
     expected_iss,
 )
+from twitch_mcp.ratelimit import APP_CLASS, USER_CLASS
+from twitch_mcp.server import _validate_pair
+from twitch_mcp.twitch_client import OAUTH_TOKEN_PATH, Route
 
 CLIENT_ID = "fake-client-id-0123456789abcdef"
 CLIENT_SECRET = "fake-client-secret"
@@ -766,3 +770,89 @@ async def test_refresh_clears_the_store_only_on_unauthenticated(
         assert not (tmp_path / "token.json").exists()
     else:
         assert auth.token is not None
+
+
+# --------------------------------------------------------------------------- C7/C9 (N7, N8)
+# Real TwitchClient wiring: the grant and validate go through the client, and the user circuit is
+# reset by the same on_invalidate listener that server.py registers.
+
+USERS_PATH = "/users"
+REJECTED_HELIX = {"error": "Unauthorized", "status": 401, "message": "Invalid OAuth token"}
+
+
+def _wire(tmp_path: Path, fake: Any, fclock: Any, settings: Any) -> tuple[Any, UserAuth]:
+    client = make_client(fake, fclock, settings)
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+    auth.set_credentials(CLIENT_ID, CLIENT_SECRET)
+
+    async def grant(form: Any) -> tuple[int, Any]:
+        return await client.post_form(OAUTH_TOKEN_PATH, form)
+
+    async def validate(bearer: str) -> tuple[int, Any]:
+        return await _validate_pair(client, bearer)
+
+    auth.attach_grant(grant)
+    auth.attach_validate(validate)
+    auth.on_invalidate(lambda: client.limiter.reset_user_circuit())
+    return client, auth
+
+
+_RENEWED = {
+    "access_token": "new-access",
+    "refresh_token": "new-refresh",
+    "token_type": "bearer",
+    "expires_in": 14400,
+    "scope": ["user:read:email"],
+}
+
+
+async def test_sign_in_clears_the_user_circuit_it_was_blocked_by(
+    tmp_path: Path, fake: Any, fclock: Any, settings: Any
+) -> None:
+    """C7/C9: a dead user token blocks the user circuit; sign-in must still complete and clear it."""
+    fake.add("GET", r"/helix/users", fake.json(REJECTED_HELIX, status=401))
+    fake.add("POST", r"/oauth2/token", fake.json(_RENEWED))
+    fake.set_validate(user_id=OPERATOR, login="operator_login", scopes=["user:read:email"])
+    client, auth = _wire(tmp_path, fake, fclock, settings)
+    with pytest.raises(TwitchMcpError):
+        await client.get(
+            Route(template=USERS_PATH, path=USERS_PATH, token_type=USER_CLASS),
+            client_id=APP_ID,
+            bearer=USER_TOKEN,
+            token_type=USER_CLASS,
+        )
+    await auth.exchange("code-1", REDIRECT, CLIENT_ID, CLIENT_SECRET)
+    assert (tmp_path / "token.json").exists()
+    assert client.limiter.auth_failed(USER_CLASS) is False
+
+
+@pytest.mark.parametrize("trip", [APP_CLASS, USER_CLASS])
+async def test_refresh_under_an_open_circuit_renews_and_keeps_the_file(
+    tmp_path: Path, fake: Any, fclock: Any, settings: Any, trip: str
+) -> None:
+    """C9: an open circuit of either class never refuses the refresh grant, so nothing is forgotten."""
+    fake.add("GET", r"/helix/users", fake.json(REJECTED_HELIX, status=401))
+    fake.add("POST", r"/oauth2/token", fake.json(_RENEWED))
+    client, auth = _wire(tmp_path, fake, fclock, settings)
+    auth.install(_token(expires_at=fclock.clock() + 30.0))
+    token = APP_TOKEN if trip == APP_CLASS else USER_TOKEN
+    with pytest.raises(TwitchMcpError):
+        await client.get(
+            Route(template=USERS_PATH, path=USERS_PATH, token_type=trip),
+            client_id=APP_ID,
+            bearer=token,
+            token_type=trip,
+        )
+    renewed = await auth.refresh_now()
+    assert renewed.access_token.get_secret_value() == "new-access"
+    assert (tmp_path / "token.json").exists(), "a refused grant must not force re-auth here"
+
+
+async def test_install_never_clears_the_app_circuit(
+    tmp_path: Path, fake: Any, fclock: Any, settings: Any
+) -> None:
+    """N9 / C7: storing a user token clears the user circuit only, never the app circuit (C-D3)."""
+    client, auth = _wire(tmp_path, fake, fclock, settings)
+    client.limiter.trip_auth(APP_CLASS)
+    auth.install(_token())
+    assert client.limiter.auth_failed(APP_CLASS) is True

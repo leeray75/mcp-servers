@@ -75,6 +75,26 @@ TokenType = str
 APP_CLASS: Final[TokenType] = "app"
 USER_CLASS: Final[TokenType] = "user"
 
+#: The class-correct hint a refused Helix read carries while its class's circuit is open (C3).
+#: Writes never receive it (C6): their refusal carries no hint.
+_CIRCUIT_HINTS: Final[dict[TokenType, str]] = {
+    USER_CLASS: (
+        "Sign in again with the connect_twitch_account tool. "
+        "A successful sign-in clears this block."
+    ),
+    APP_CLASS: "Restart the container; the app-token circuit never resets itself.",
+}
+_CIRCUIT_MESSAGE: Final = "Twitch rejected this server's token"
+#: The hint for an ``unauthenticated`` answer that is not a circuit refusal: a validate 401 (C9)
+#: and a write refused by an open circuit (C6). It names no restart and claims no circuit.
+NEUTRAL_AUTH_HINT: Final = "Check the credentials in .env and re-authorize the account if needed."
+
+
+def circuit_hint(token_type: TokenType) -> str:
+    """The class hint for an open circuit of ``token_type`` (C3). Never carries a credential."""
+    return _CIRCUIT_HINTS.get(token_type, _CIRCUIT_HINTS[APP_CLASS])
+
+
 Clock = Callable[[], float]
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -225,8 +245,8 @@ class RateLimiter:
             measure_unix_to_monotonic() if unix_to_monotonic is None else unix_to_monotonic
         )
         self._buckets: dict[str, BucketState] = {}
-        self._auth_failed = False
-        self._auth_message = "Twitch rejected this server's token"
+        self._auth_failed: dict[TokenType, bool] = {}
+        self._auth_message: dict[TokenType, str] = {}
         self._auth_listener: Callable[[], None] | None = None
 
     def _monotonic_reset(self, reset_unix: float) -> float:
@@ -235,10 +255,14 @@ class RateLimiter:
 
     # ------------------------------------------------------------ 401 circuit (R24)
 
-    @property
-    def auth_failed(self) -> bool:
-        """True once the process-wide circuit is open; only a restart clears it (R24)."""
-        return self._auth_failed
+    def auth_failed(self, token_type: TokenType) -> bool:
+        """True once this token class's circuit is open (R24, C3).
+
+        The app class clears only on restart. The user class clears through
+        :meth:`reset_user_circuit`
+        when a new user token is stored (C7).
+        """
+        return self._auth_failed.get(token_type, False)
 
     def set_auth_failure_listener(self, listener: Callable[[], None]) -> None:
         """Register the hook the circuit calls the first time it opens (R30's third trigger).
@@ -247,26 +271,36 @@ class RateLimiter:
         and outstanding confirm tokens — in the same instant the circuit opens. Anything else lets
         a verdict made under the old credential keep authorising writes after Twitch revoked it.
         The listener is attached after construction because the caches belong to the service, which
-        is built *from* this limiter. One listener only, fired exactly once: the circuit never
-        recovers (R24), so there is no second trip to announce.
+        is built *from* this limiter. One listener, fired once per token class on that class's first
+        open (C3): a second trip of the same class does not announce again.
         """
         self._auth_listener = listener
 
-    def trip_auth(self, *, message: str | None = None) -> None:
-        """Open the process-wide 401 circuit. Logged once, with no credential material."""
-        if not self._auth_failed:
-            self._auth_failed = True
+    def trip_auth(self, token_type: TokenType, *, message: str | None = None) -> None:
+        """Open one token class's 401 circuit. Logged once per class, no credential material."""
+        if not self.auth_failed(token_type):
+            self._auth_failed[token_type] = True
             if message:
-                self._auth_message = message
+                self._auth_message[token_type] = message
             logger.error(
-                "twitch 401 circuit open: no further upstream traffic this process",
-                extra={"outcome": "auth_circuit"},
+                "twitch 401 circuit open: no further Helix calls of this token class",
+                extra={"outcome": "auth_circuit", "token_type": token_type},
             )
             if self._auth_listener is not None:
                 try:
                     self._auth_listener()
                 except Exception:  # noqa: BLE001 - the circuit opens even if the hook explodes
                     logger.exception("the 401 cache-invalidation listener raised")
+
+    def reset_user_circuit(self) -> None:
+        """Clear the user class's circuit only (C7). Runs when a user token is stored or forgotten.
+
+        The app class is never cleared here: it resets only by restart (C-D3). It does not fire the
+        auth listener; the caller already invalidated the identity caches.
+        """
+        self._auth_failed.pop(USER_CLASS, None)
+        self._auth_message.pop(USER_CLASS, None)
+        logger.info("twitch user circuit reset", extra={"outcome": "auth_circuit_reset"})
 
     # ------------------------------------------------------------ buckets
 
@@ -355,19 +389,24 @@ class RateLimiter:
         method: str,
         template: str,
         major: str = "",
+        *,
+        circuit: bool = True,
+        class_hint: bool = True,
     ) -> Lease:
         """Wait for permission to send one request. The caller must ``release()`` it.
 
-        Raises ``kind=unauthenticated`` without a request once the 401 circuit is open (R24), and
-        ``kind=rate_limited`` without a request when a bucket needs a longer wait than allowed
-        (R21).
+        Raises ``kind=unauthenticated`` without a request once this token class's 401 circuit is
+        open (R24, C3) and ``circuit`` is true; ``circuit=False`` callers (token exchange, refresh,
+        revoke, the mint, validate) are never gated (C9). ``class_hint=False`` (writes, C6) refuses
+        without the class hint. ``kind=rate_limited`` without a request when a bucket needs a longer
+        wait than allowed (R21).
         """
-        if self._auth_failed:
+        if circuit and self.auth_failed(token_type):
             raise TwitchMcpError(
                 "unauthenticated",
-                self._auth_message,
+                self._auth_message.get(token_type, _CIRCUIT_MESSAGE),
                 http_status=401,
-                hint="Restart the container; this circuit is process-wide and never resets itself.",
+                hint=circuit_hint(token_type) if class_hint else NEUTRAL_AUTH_HINT,
             )
         key = route_key(token_type, method, template, major)
         state = self._state_for(key)

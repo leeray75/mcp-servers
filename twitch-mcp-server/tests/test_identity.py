@@ -66,6 +66,7 @@ from twitch_mcp.identity import (
 )
 from twitch_mcp.logging_setup import register_secret, unregister_secret
 from twitch_mcp.oauth import TokenStore, UserAuth, UserToken
+from twitch_mcp.ratelimit import USER_CLASS
 from twitch_mcp.service import TwitchService
 
 #: The operator is in this module's rosters; this id is in none of them.
@@ -543,7 +544,9 @@ async def test_identity_is_invalidated_on_the_first_401(
             )
         assert exc.value.kind == "unknown_outcome", "R16: a write answered by a 401 is undetermined"
         assert exc.value.http_status == 401
-        assert service.auth_failed is True, "R24: the process-wide 401 circuit is open"
+        assert service.limiter.auth_failed(USER_CLASS) is True, (
+            "R24: the user-class circuit is open"
+        )
         assert service.identity_verifier is wiring.verifier
         assert _identity_count(wiring.cache) == 0, "R30: no verdict survives the first 401"
         assert fake.request_count == requests_before_write + 1, "the write went out exactly once"

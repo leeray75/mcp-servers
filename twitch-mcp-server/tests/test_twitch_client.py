@@ -24,6 +24,7 @@ from tests.twitch_fakes import (
 )
 from twitch_mcp.config import Settings
 from twitch_mcp.errors import TwitchMcpError
+from twitch_mcp.ratelimit import APP_CLASS, USER_CLASS
 from twitch_mcp.twitch_client import (
     InvalidArgument,
     Response,
@@ -98,17 +99,18 @@ async def test_429_learns_ratelimit_headers_and_is_never_replayed(
     assert fake.request_count == 1  # a real 429 is never replayed (R22)
 
 
-async def test_first_401_trips_the_process_wide_circuit(
+async def test_first_401_trips_its_token_class_circuit(
     fake: FakeTwitch, fclock: Any, settings: Settings
 ) -> None:
     stub(fake, "GET", r"/helix/users", {"error": "Unauthorized", "status": 401}, status=401)
     client = make_client(fake, fclock, settings)
-    assert client.auth_failed is False
+    assert client.limiter.auth_failed(APP_CLASS) is False
     with pytest.raises(TwitchMcpError) as exc:
         await client.get(_route(), client_id=APP_ID, bearer=APP_TOKEN)
     assert exc.value.kind == "unauthenticated"
-    assert client.auth_failed is True  # R24
-    assert client.limiter.auth_failed is True
+    assert client.limiter.auth_failed(APP_CLASS) is True  # R24 / C3
+    assert client.limiter.auth_failed(USER_CLASS) is False
+    assert "Restart the container" in (exc.value.hint or "")  # the app-class hint (C3)
     before = fake.request_count
     with pytest.raises(TwitchMcpError) as exc2:
         await client.get(_route(), client_id=APP_ID, bearer=APP_TOKEN)
@@ -725,3 +727,238 @@ async def test_a_read_recovers_when_a_retry_succeeds(
     assert result.status == 200
     assert [record["id"] for record in result.data] == ["504129"]
     assert responses == [], "the second attempt was the one that answered"
+
+
+# --------------------------------------------------------------------------- C1/C2 (N1, N2)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_missing_scope_in_message_is_permission_and_opens_no_circuit(
+    fake: FakeTwitch, fclock: Any, settings: Settings, status: int
+) -> None:
+    """C1/C2: Twitch's missing-scope text lives in ``message``; it is a permission, not a 401."""
+    stub(
+        fake,
+        "GET",
+        r"/helix/users",
+        {"error": "Unauthorized", "status": status, "message": "Missing scope: user:read:email"},
+        status=status,
+    )
+    client = make_client(fake, fclock, settings)
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.get(_route(), client_id=APP_ID, bearer=APP_TOKEN)
+    err = exc.value
+    assert err.kind == "permission"
+    assert err.retryable is False
+    assert "user:read:email" in (err.hint or "")
+    assert "holds no scopes" not in (err.hint or "")
+    assert client.limiter.auth_failed(APP_CLASS) is False
+    assert client.limiter.auth_failed(USER_CLASS) is False
+    before = fake.request_count
+    with pytest.raises(TwitchMcpError):
+        await client.get(_route(), client_id=APP_ID, bearer=APP_TOKEN)
+    assert fake.request_count == before + 1, "no circuit: the next call is sent"
+
+
+# --------------------------------------------------------------------------- C3/C9 (N4, N15)
+
+
+async def test_user_and_app_circuits_are_isolated_at_the_client(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """N4 / C4 / C5: a non-scope 401 on one class opens only that class's circuit."""
+    stub(
+        fake,
+        "GET",
+        r"/helix/streams",
+        {"error": "Unauthorized", "status": 401, "message": "Invalid OAuth token"},
+        status=401,
+    )
+    client = make_client(fake, fclock, settings)
+    user_route = Route(template=STREAMS, path=STREAMS, token_type=USER_CLASS)
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.get(user_route, client_id=APP_ID, bearer=USER_TOKEN, token_type=USER_CLASS)
+    assert exc.value.kind == "unauthenticated"
+    assert client.limiter.auth_failed(USER_CLASS) is True
+    assert client.limiter.auth_failed(APP_CLASS) is False
+    before = fake.request_count
+    await client.get(_route(), client_id=APP_ID, bearer=APP_TOKEN)  # the app read still goes out
+    assert fake.request_count == before + 1
+
+    # Mirror: an app-class 401 leaves the user class working.
+    stub(
+        fake,
+        "GET",
+        r"/helix/clips",
+        {"error": "Unauthorized", "status": 401, "message": "Invalid OAuth token"},
+        status=401,
+    )
+    mirror = make_client(fake, fclock, settings)
+    with pytest.raises(TwitchMcpError):
+        await mirror.get(
+            Route(template="/clips", path="/clips"), client_id=APP_ID, bearer=APP_TOKEN
+        )
+    assert mirror.limiter.auth_failed(APP_CLASS) is True
+    assert mirror.limiter.auth_failed(USER_CLASS) is False
+    before = fake.request_count
+    with pytest.raises(TwitchMcpError):
+        await mirror.get(user_route, client_id=APP_ID, bearer=USER_TOKEN, token_type=USER_CLASS)
+    assert fake.request_count == before + 1, "the user read still makes its request"
+
+
+async def test_ungated_paths_still_send_with_both_circuits_open(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """N15 / C9: with both circuits open, validate and the grant still send a request."""
+    stub(
+        fake,
+        "GET",
+        r"/helix/streams",
+        {"error": "Unauthorized", "status": 401, "message": "Invalid OAuth token"},
+        status=401,
+    )
+    stub(
+        fake,
+        "GET",
+        r"/helix/clips",
+        {"error": "Unauthorized", "status": 401, "message": "Invalid OAuth token"},
+        status=401,
+    )
+    stub(fake, "POST", r"/oauth2/token", {"access_token": "x", "expires_in": 14400})
+    fake.set_validate(user_id="1", login="op", scopes=["user:read:email"])
+    client = make_client(fake, fclock, settings)
+    with pytest.raises(TwitchMcpError):
+        await client.get(
+            Route(template=STREAMS, path=STREAMS, token_type=USER_CLASS),
+            client_id=APP_ID,
+            bearer=USER_TOKEN,
+            token_type=USER_CLASS,
+        )
+    with pytest.raises(TwitchMcpError):
+        await client.get(
+            Route(template="/clips", path="/clips"), client_id=APP_ID, bearer=APP_TOKEN
+        )
+    assert client.limiter.auth_failed(USER_CLASS) is True
+    assert client.limiter.auth_failed(APP_CLASS) is True
+    before = fake.request_count
+    await client.fetch_validate(USER_TOKEN, token_type=USER_CLASS)
+    await client.post_form("/oauth2/token", {"grant_type": "refresh_token"})
+    assert fake.request_count == before + 2, "validate and the grant are never refused"
+
+    # Half two: a fresh client with closed circuits; a validate 401 trips nothing and gives no
+    # circuit hint.
+    fresh_fake = FakeTwitch()
+    fresh_fake.add(
+        "GET", r"/oauth2/validate", fresh_fake.json({"status": 401, "message": "x"}, 401)
+    )
+    fresh = make_client(fresh_fake, fclock, settings)
+    with pytest.raises(TwitchMcpError) as exc:
+        await fresh.fetch_validate(USER_TOKEN, token_type=USER_CLASS)
+    assert exc.value.kind == "unauthenticated"
+    assert "Restart" not in (exc.value.hint or "") and "connect_twitch_account" not in (
+        exc.value.hint or ""
+    )
+    assert fresh.limiter.auth_failed(USER_CLASS) is False
+    assert fresh.limiter.auth_failed(APP_CLASS) is False
+
+
+# --------------------------------------------------------------------------- C2/C6 (N11, N13, N14)
+
+
+async def test_scope_hint_drops_control_characters_and_newlines(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """N11 / C2: the hint carries Twitch's wording with control characters and newlines removed."""
+    stub(
+        fake,
+        "GET",
+        r"/helix/users",
+        {
+            "error": "Unauthorized",
+            "status": 401,
+            "message": "Missing scope:\nuser:read:email\x07 required",
+        },
+        status=401,
+    )
+    client = make_client(fake, fclock, settings)
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.get(_route(), client_id=APP_ID, bearer=APP_TOKEN)
+    hint = exc.value.hint or ""
+    assert exc.value.kind == "permission"
+    assert "user:read:email" in hint
+    assert "\n" not in hint and "\x07" not in hint
+
+
+async def test_non_scope_write_401_is_unknown_outcome_and_trips_only_the_user_class(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """N13 / C6: a write is never re-issued; its refusal carries the R16 hint and no class hint."""
+    stub(
+        fake,
+        "POST",
+        r"/helix/chat/messages",
+        {"error": "Unauthorized", "status": 401, "message": "Invalid OAuth token"},
+        status=401,
+    )
+    client = make_client(fake, fclock, settings)
+    before = fake.request_count
+    write_route = Route(template="/chat/messages", path="/chat/messages", token_type=USER_CLASS)
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.post(write_route, client_id=APP_ID, bearer=USER_TOKEN, json_body={})
+    err = exc.value
+    assert err.kind == "unknown_outcome"
+    assert "Do not re-issue" in (err.hint or "")
+    assert "connect_twitch_account" not in (err.hint or "") and "Restart" not in (err.hint or "")
+    assert fake.request_count == before + 1
+    assert client.limiter.auth_failed(USER_CLASS) is True
+    assert client.limiter.auth_failed(APP_CLASS) is False
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "kind"),
+    [
+        (
+            500,
+            {"error": "x", "status": 500, "message": "Missing scope: user:read:email"},
+            "upstream",
+        ),
+        (
+            401,
+            {"error": "Unauthorized", "status": 401, "message": "Missing token"},
+            "unauthenticated",
+        ),
+        (403, {"error": "Forbidden", "status": 403, "message": "missing"}, "upstream"),
+    ],
+)
+async def test_message_is_read_only_for_a_scope_phrase_on_401_or_403(
+    fake: FakeTwitch, fclock: Any, settings: Settings, status: int, body: Any, kind: str
+) -> None:
+    """N14 / C1 guard: ``message`` recognises a scope only on 401/403 and only with the word scope."""
+    stub(fake, "GET", r"/helix/users", body, status=status)
+    client = make_client(fake, fclock, settings)
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.get(_route(), client_id=APP_ID, bearer=APP_TOKEN)
+    assert exc.value.kind == kind
+
+
+async def test_scope_401_on_a_write_is_permission_and_opens_no_circuit(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """N13 / C6: a missing-scope 401 on a write is a permission, sent once, and trips nothing."""
+    stub(
+        fake,
+        "POST",
+        r"/helix/chat/messages",
+        {"error": "Unauthorized", "status": 401, "message": "Missing scope: user:write:chat"},
+        status=401,
+    )
+    client = make_client(fake, fclock, settings)
+    before = fake.request_count
+    write_route = Route(template="/chat/messages", path="/chat/messages", token_type=USER_CLASS)
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.post(write_route, client_id=APP_ID, bearer=USER_TOKEN, json_body={})
+    assert exc.value.kind == "permission"
+    assert "user:write:chat" in (exc.value.hint or "")
+    assert fake.request_count == before + 1, "a write is dispatched once, never re-issued"
+    assert client.limiter.auth_failed(USER_CLASS) is False
+    assert client.limiter.auth_failed(APP_CLASS) is False

@@ -65,7 +65,7 @@ log or commit it.
   `POST /oauth2/token` and `POST /oauth2/revoke`, which carry identifiers in the form body (W6): the token request
   carries `client_id` and `client_secret`; revoke carries `client_id` and the token being revoked, nothing else. Redirects
   refused (R12), streamed byte cap (R14), read retries on 5xx/transport with a single 503 retry (R15), **no write
-  retries ever** (R16), 429 bucket parking (R21/R22), the `401` circuit (R24), Helix list-repeat query encoding and
+  retries ever** (R16), 429 bucket parking (R21/R22), the per-token-class Helix `401` circuit (R24, C3), Helix list-repeat query encoding and
   validated/percent-encoded path segments (R17/R18), numeric-code error mapping, and the two fixed
   `POST https://id.twitch.tv/oauth2/token` (+ `/oauth2/revoke`) form calls.
 - `ratelimit.py` app and user buckets keyed by token type, learned from `Ratelimit-Limit/-Remaining/-Reset` only,
@@ -76,8 +76,8 @@ log or commit it.
   unknown id / 403 / 404 / 5xx so the response cannot probe the allowlist (R25–R27).
 - `identity.py` the operator's own `user_id` from `/oauth2/validate` (never from an argument) and verified
   moderator/editor status from `GET /moderation/moderators` / `GET /channels/editors`, cached for
-  `TWITCH_IDENTITY_TTL_SECONDS` (default 300) and invalidated on token refresh, disconnect and the first `401`
-  (R29/R30).
+  `TWITCH_IDENTITY_TTL_SECONDS` (default 300) and invalidated on token refresh, disconnect and the first non-scope
+  `401` of a token class (R29/R30).
 - `confirmation.py` single-use in-memory confirmation tokens bound to `(tool, canonical-args-hash, broadcaster_id)`,
   TTL `TWITCH_CONFIRM_TOKEN_TTL_SECONDS` (30–3600), cleared on disconnect, refresh, circuit open and process exit;
   never logged, never on disk, never in a result other than the one that minted them (R31–R34).
@@ -89,9 +89,10 @@ log or commit it.
   only the server's own stored credential and calls `POST /oauth2/revoke` — no other account action (R51).
 - `models.py` pydantic result models. `project.py` raw Helix JSON → models.
 - `errors.py` `TwitchMcpError(kind, message, code, http_status, retryable, retry_after, hint)`; `kind` derives from
-  HTTP status plus Twitch's numeric/error code, never from message text (R43/R44). A missing-scope `401`/`403`
+  HTTP status plus Twitch's numeric/error code, never from message text, except that a 401/403 `message` is read
+  only to recognise a missing-scope phrase (R43/R44, C1). A missing-scope `401`/`403`
   returns `kind=permission`, `retryable=false`, and a `hint` naming the scope Twitch asked for plus the scopes the
-  token holds — the message says "not authorized", never "no results" (R45).
+  token holds when the body lists them — the message says "not authorized", never "no results" (R45, C2, C-D10).
 - `security.py` bearer + Host/Origin middleware and `logging_setup.py` redacting JSON logs (both copied from the
   sibling and adapted). There is no plaintext-refusal middleware (S7); uvicorn refuses plaintext at the TLS
   handshake.
@@ -115,7 +116,7 @@ log or commit it.
   from every write path. Reads do retry (R15); keep the asymmetry.
 - **Verified identity** (R29): a write targets the token's own `user_id` or a channel where `identity.py` verified
   moderator/editor status. `TWITCH_ALLOWED_BROADCASTER_IDS` is necessary, never sufficient, for a moderation or
-  channel-management write. Verification is invalidated on refresh, disconnect and the first `401` (R30).
+  channel-management write. Verification is invalidated on refresh, disconnect and the first non-scope `401` of a token class (R30).
 - **Confirmation tokens** (R31–R34): the first turn of every write returns `kind=confirmation_required` as a
   **successful** (non-`isError`) result carrying the resolved plan and a token, and sends no write. Tokens are
   single-use, TTL-bound, bound to `(tool, canonical-args-hash, broadcaster_id)`, cleared on disconnect/refresh/circuit
@@ -128,8 +129,10 @@ log or commit it.
   endpoint's point cost or a limit value (a test greps for a baked-in 800). App and user buckets stay separate (R20).
   A wait beyond `TWITCH_MAX_RATE_LIMIT_WAIT_SECONDS` fails fast with `retry_after` and makes no request (R21). A
   shared/global 429 is never replayed in-call and never counted as invalid (R22).
-- **The `401` circuit** (R24): the first `401` from the API base stops all further upstream traffic for the process
-  lifetime; later calls return `kind=unauthenticated` without a request. Only a restart clears it.
+- **The `401` circuit** (R24, C3–C9): the first non-scope `401` on a Helix call stops later Helix calls of that token
+  class only (app and user circuits are separate); later calls of that class return `kind=unauthenticated` without a
+  request. A missing scope opens no circuit. Token exchange, refresh, revoke, the mint and validate are never gated.
+  The app circuit clears only on restart; the user circuit clears when a new user token is stored (`reset_user_circuit`).
 - **One httpx module** (R11): only `twitch_client.py` imports httpx. Only the two pinned hosts are contacted;
   redirects are never followed. `POST` goes only to `/oauth2/token` (and `POST /oauth2/revoke`); `DELETE`/`PUT`/
   `PATCH`/`POST` only to the fixed `/helix/...` templates of spec §6.4. No agent-supplied string becomes a raw path

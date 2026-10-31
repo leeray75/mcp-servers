@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- A missing scope is a permission answer, not an auth failure (Amendment 7, scope-401, C1–C2). Twitch's missing-scope
+  text in `message` now returns `kind=permission` with no circuit opened, and the hint is sanitised.
+- The `401` circuit is per token class and stops Helix calls only (C3–C5, C9). A user-token `401` no longer blocks app
+  reads; token exchange, refresh, revoke, the mint and validate are never gated. A stored user token clears the user
+  circuit (C7). `/healthz` follows the app circuit only (C8).
+
 ### Changed
 
 - The user-token store moves from the `./data` bind mount to the Docker named volume `twitch-mcp-data`

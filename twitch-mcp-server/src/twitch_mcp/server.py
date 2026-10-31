@@ -83,7 +83,7 @@ from twitch_mcp.models import (
     WriteResult,
 )
 from twitch_mcp.oauth import OAuthFlow
-from twitch_mcp.ratelimit import USER_CLASS, RateLimiter
+from twitch_mcp.ratelimit import APP_CLASS, USER_CLASS, RateLimiter
 from twitch_mcp.security import (
     HEALTH_PATH,
     OAUTH_CALLBACK_PATH,
@@ -1507,8 +1507,8 @@ class Wiring:
 
     @property
     def auth_failed(self) -> bool:
-        """The one 401 circuit (R24) — ``/healthz`` reports it degraded, never why (R3)."""
-        return self.service.auth_failed
+        """The app-token 401 circuit (R24, C8): ``/healthz`` reports it degraded, never why (R3)."""
+        return self.service.limiter.auth_failed(APP_CLASS)
 
     async def boot(self, register: Callable[[ToolPlan], None]) -> str:
         """The R50 probe, then the plan and registration — before anything is served.
@@ -1742,6 +1742,8 @@ def create_app(
     if oauth is not None:
         # R30/R33: a refresh, a disconnect or a revoked credential kills both live caches at once.
         oauth.on_invalidate(service.on_identity_change)
+        # C7: a stored or forgotten user token clears the user circuit only; never the app circuit.
+        oauth.on_invalidate(lambda: service.limiter.reset_user_circuit())
 
     server = TwitchServer(SERVER_NAME, instructions=INSTRUCTIONS, version=__version__)
 
@@ -1850,7 +1852,7 @@ async def _validate_pair(client: TwitchClient, bearer: str) -> tuple[int, Any]:
     """``GET /oauth2/validate`` as :class:`~twitch_mcp.oauth.UserAuth` wants it:
     status plus body."""
     try:
-        response = await client.fetch_validate(bearer)
+        response = await client.fetch_validate(bearer, token_type=USER_CLASS)
     except TwitchMcpError as exc:
         return (exc.http_status or 401), None
     return response.status, response.body

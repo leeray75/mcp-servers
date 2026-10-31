@@ -53,6 +53,7 @@ from tests.twitch_fakes import (
 )
 from twitch_mcp import __version__
 from twitch_mcp.capabilities import ACCOUNT_TOOLS, ALL_TOOLS, ALL_WRITE_TOOLS, READ_TOOLS
+from twitch_mcp.ratelimit import APP_CLASS, USER_CLASS
 from twitch_mcp.server import SIGNED_IN_PAGE
 
 # The four SPEC §6.4 lists, spelled out here rather than imported from capabilities.py: importing
@@ -991,3 +992,17 @@ async def test_no_result_ever_echoes_a_credential(fake: FakeTwitch, fclock: Fake
         for secret in secrets:
             assert secret not in text, name
     assert VALIDATE_USER["user_id"] == OPERATOR
+
+
+async def test_healthz_follows_only_the_app_class_circuit(
+    fake: FakeTwitch, fclock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N12 / C8: an open user circuit leaves /healthz ok; an open app circuit degrades it."""
+    monkeypatch.setattr("twitch_mcp.server.AppTokenSource.access_token", _answer_app_token)
+    fake.add("GET", r"^/oauth2/validate$", fake.json({"expires_in": 5000}))
+    async with running_app(fake, fclock) as app, http_client(app) as http:
+        limiter = app.state.twitch_wiring.service.limiter
+        limiter.trip_auth(USER_CLASS)
+        assert (await http.get("/healthz")).json()["status"] == "ok"
+        limiter.trip_auth(APP_CLASS)
+        assert (await http.get("/healthz")).json()["status"] == "degraded"

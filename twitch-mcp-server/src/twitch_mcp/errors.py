@@ -6,7 +6,8 @@ written by this package and never contain tokens, URLs, request arguments or Twi
 bodies.
 
 The ``kind`` taxonomy (R44: derived from the HTTP status plus Twitch's own numeric/error code,
-never from message text):
+never from message text, except that a 401/403 ``message`` is read to recognise a missing scope,
+C1):
 
 ===================  ==============================================================  ==========
 kind                 meaning                                                          retryable

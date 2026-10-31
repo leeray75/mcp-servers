@@ -57,6 +57,7 @@ from twitch_mcp.errors import TwitchMcpError
 from twitch_mcp.guard import BROADCASTER_REFUSAL, OWNER_REFUSAL
 from twitch_mcp.identity import NOT_AUTHORIZED_MESSAGE
 from twitch_mcp.project import has_more
+from twitch_mcp.ratelimit import APP_CLASS, USER_CLASS
 from twitch_mcp.service import DISABLED_WRITE_MESSAGE, MAX_FIRST, TwitchService
 
 POLL_ID_LONG = "poll-00001"
@@ -971,6 +972,7 @@ async def test_r45_missing_scope_surfaces_as_permission(
     with pytest.raises(TwitchMcpError) as exc:
         await h.service.get_broadcaster_subscribers(broadcaster_id=BROADCASTER)
     assert exc.value.kind == "permission"
+    assert h.service.limiter.auth_failed(APP_CLASS) is False, "C2: a scope answer opens no circuit"
 
 
 # --------------------------------------------------------------------------- R52/R53: logging
@@ -1079,3 +1081,38 @@ async def test_r51_disconnect_revokes_only_this_credential(
         await dispatch(h, "add_vip", BROADCASTER, {"user_id": MODERATOR_ID}, confirm=token)
     assert exc.value.kind == "stale_confirmation"
     assert h.requests == 0
+
+
+async def test_c1_user_banned_users_message_only_scope_is_permission_and_no_circuit(
+    fake: FakeTwitch, fclock: FakeClock
+) -> None:
+    """C1/C2/C9: Twitch's missing-scope text in ``message`` is a permission; no circuit opens."""
+    h = harness(fake, fclock, user_oauth=True, user_connected=True)
+    forbid(
+        fake,
+        "GET",
+        r"/helix/moderation/banned",
+        {"error": "Unauthorized", "status": 401, "message": "Missing scope: moderation:read"},
+        401,
+    )
+    with pytest.raises(TwitchMcpError) as exc:
+        await h.service.get_banned_users(broadcaster_id=BROADCASTER)
+    assert exc.value.kind == "permission"
+    assert h.service.limiter.auth_failed(APP_CLASS) is False
+    assert h.service.limiter.auth_failed(USER_CLASS) is False
+
+
+async def test_open_app_circuit_refuses_app_reads_without_a_request(
+    fake: FakeTwitch, fclock: FakeClock
+) -> None:
+    """N6 / C3: once the app class trips, its Helix reads are refused with no request."""
+    h = harness(fake, fclock)
+    fake.add("GET", r"/helix/polls", fake.json({"error": "Unauthorized", "status": 401}, 401))
+    with pytest.raises(TwitchMcpError) as first:
+        await h.service.get_polls(broadcaster_id=BROADCASTER)
+    assert first.value.kind == "unauthenticated"
+    before = fake.helix_request_count
+    with pytest.raises(TwitchMcpError) as second:
+        await h.service.get_polls(broadcaster_id=BROADCASTER)
+    assert second.value.kind == "unauthenticated"
+    assert fake.helix_request_count == before

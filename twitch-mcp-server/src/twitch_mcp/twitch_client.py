@@ -19,12 +19,14 @@ outcome that cannot be determined (transport error, 5xx, a 2xx whose body could 
 becomes ``kind=unknown_outcome`` with a check-the-channel hint, never a replay.
 
 Rate limits are learned from ``Ratelimit-*`` via the :class:`~twitch_mcp.ratelimit.Lease` (R19); a
-429 is never replayed (R22). The first ``401`` from Helix opens the process-wide circuit through
-:meth:`RateLimiter.trip_auth` (R24). ``kind`` comes from the HTTP status plus Twitch's own
-``status`` / ``error`` / ``error_description`` fields — never from the free-form ``message`` (R44).
-A 401/403 whose body names a missing scope becomes ``kind=permission`` whose hint carries that scope
-string plus the token's granted scopes (R45); the scope string is whatever Twitch said and is not
-hard-coded anywhere (D10).
+429 is never replayed (R22). The first non-scope ``401`` from Helix opens that token class's circuit
+through :meth:`RateLimiter.trip_auth` (R24, C3). ``kind`` comes from the HTTP status plus Twitch's
+own
+``status`` / ``error`` / ``error_description`` fields; ``message`` is read only to recognise a
+missing-scope phrase on a 401/403 (R44, C1). A 401/403 whose body names a missing scope becomes
+``kind=permission`` whose hint carries that scope string plus the token's granted scopes when the
+body lists them (R45, C2); the scope string is whatever Twitch said and is not hard-coded anywhere
+(D10).
 """
 
 from __future__ import annotations
@@ -45,7 +47,16 @@ import httpx
 from twitch_mcp.config import Settings
 from twitch_mcp.errors import TwitchMcpError
 from twitch_mcp.logging_setup import log_request, log_write
-from twitch_mcp.ratelimit import APP_CLASS, Clock, Lease, RateLimiter, Sleep, TokenType
+from twitch_mcp.ratelimit import (
+    APP_CLASS,
+    NEUTRAL_AUTH_HINT,
+    Clock,
+    Lease,
+    RateLimiter,
+    Sleep,
+    TokenType,
+    circuit_hint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +85,14 @@ _LOGIN_RE: Final = re.compile(r"[A-Za-z0-9_]{1,25}")
 _CURSOR_RE: Final = re.compile(r"[A-Za-z0-9_=-]{1,256}")
 _SEGMENT_RE: Final = re.compile(r"[A-Za-z0-9_.%~-]{1,128}")
 _INT_RE: Final = re.compile(r"[0-9]{1,10}")
-#: Where a Helix 401/403 body says the token lacks the scope the endpoint needs (R45). These are
-#: Twitch's own field names — a location in the body, not a scope table (D10).
-_SCOPE_BEARING_KEYS: Final[tuple[str, ...]] = ("error_description", "error")
-#: Substrings that mark one of those fields as being about a missing scope. ``message`` is never
-#: consulted (R44).
+#: Where a Helix 401/403 body says the token lacks the scope the endpoint needs (R45, C1). These are
+#: Twitch's own field names — a location in the body, not a scope table (D10). ``message`` is read
+#: only here, only on a 401/403, and only to recognise a missing-scope phrase (R44 exception).
+_SCOPE_BEARING_KEYS: Final[tuple[str, ...]] = ("error_description", "error", "message")
+#: Substrings that, with the word "scope", mark one of those fields as being about a missing scope.
 _SCOPE_PHRASES: Final[tuple[str, ...]] = ("missing scope", "requires", "does not have", "missing")
+#: Control characters (including newline) that never reach the agent inside a hint (C2).
+_CONTROL_CHARS_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
 
 Method = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 
@@ -293,18 +306,20 @@ def _error_code(body: Any, status: int) -> int | None:
     """Twitch's own numeric status from the body (R44), falling back to the HTTP status.
 
     Helix returns its error as ``{"error": "...", "status": 404, "message": "..."}``; the numeric
-    ``status`` is the code this server reports. Nothing is ever read from ``message``.
+    ``status`` is the code this server reports. ``message`` is never read here; it is consulted only
+    by :func:`_scope_phrase` on a 401/403 (C1).
     """
     documented = _status_field(body)
     return documented if documented is not None else status
 
 
 def _scope_phrase(body: Any) -> str | None:
-    """Twitch's own words about a missing scope, from its structured fields only (R44/R45).
+    """Twitch's own words about a missing scope, from its structured fields (R44/R45, C1/C2).
 
-    Only ``error`` and ``error_description`` are consulted — never ``message`` — and only when the
-    phrase is unmistakably about a scope. The returned string is Twitch's, so nothing about scopes
-    is hard-coded here (D10).
+    Read in the order ``error_description``, ``error``, ``message``; a field counts only when it is
+    unmistakably about a scope. The caller reads this only on a 401/403. Every control character
+    and newline in the returned text becomes one space (C2). The text is Twitch's, so nothing about
+    scopes is hard-coded here (D10).
     """
     for key in _SCOPE_BEARING_KEYS:
         text = _field(body, key)
@@ -314,7 +329,7 @@ def _scope_phrase(body: Any) -> str | None:
         if "scope" not in lowered:
             continue
         if any(phrase in lowered for phrase in _SCOPE_PHRASES):
-            return text
+            return _CONTROL_CHARS_RE.sub(" ", text)
     return None
 
 
@@ -379,11 +394,6 @@ class TwitchClient:
     def client_id(self) -> str:
         """The app's Client-Id. It is an identifier, not a secret, and is never logged (R52)."""
         return self._client_id
-
-    @property
-    def auth_failed(self) -> bool:
-        """True once the process-wide 401 circuit is open (R24)."""
-        return self.limiter.auth_failed
 
     @property
     def settings(self) -> Settings:
@@ -630,7 +640,10 @@ class TwitchClient:
         url = self._url(self._api_base, self._api_host, route.path, params)
         headers = self._headers(client_id, bearer)
         kind: TokenType = route.token_type
-        lease = await self.limiter.acquire(kind, method, route.template, route.major)
+        # C6: a write refused by an open circuit carries no class hint.
+        lease = await self.limiter.acquire(
+            kind, method, route.template, route.major, class_hint=False
+        )
         started = self._clock()
         try:
             try:
@@ -723,12 +736,14 @@ class TwitchClient:
         kind: TokenType,
         *,
         write: bool,
+        trip_circuit: bool = True,
     ) -> Response:
         """Turn a non-success response into the one error its status and body justify (R44).
 
         Always raises — the declared return type exists so the read path stays typed. ``write``
         selects R16's ``unknown_outcome`` wherever the effect of a dispatched request is
-        undeterminable, so it is never re-issued.
+        undeterminable, so it is never re-issued. ``trip_circuit=False`` (validate, C9) never opens
+        the class circuit and gives its ``unauthenticated`` no class hint.
         """
         code = _error_code(body, status)
 
@@ -755,13 +770,16 @@ class TwitchClient:
             )
 
         if status == 401:
-            # R24: the first 401 from Helix stops all further upstream traffic for the process.
-            # Both credential classes share the one circuit, which only a restart clears.
-            self.limiter.trip_auth(message="Twitch rejected this server's token")
-            note("auth")
+            # C1/C2/C6: a missing scope is a permission answer on a read or a write. It opens no
+            # circuit, so it is decided before any trip.
             scope_hint = _scope_phrase(body)
             if scope_hint is not None:
+                note("permission")
                 raise self._permission_error(body, status, code, scope_hint)
+            # R24/C3: the first non-scope 401 stops Helix calls of this token class only.
+            if trip_circuit:
+                self.limiter.trip_auth(kind, message="Twitch rejected this server's token")
+            note("auth")
             if write:
                 raise self._unknown_outcome(
                     "Twitch rejected the credential while answering this write",
@@ -772,10 +790,7 @@ class TwitchClient:
                 "Twitch rejected this server's token",
                 code=code,
                 http_status=status,
-                hint=(
-                    "Check the credentials in .env, re-authorize the account if needed, and "
-                    "restart the container: this circuit is process-wide and never resets itself."
-                ),
+                hint=circuit_hint(kind) if trip_circuit else NEUTRAL_AUTH_HINT,
             )
 
         if status == 403:
@@ -864,7 +879,9 @@ class TwitchClient:
             if isinstance(granted, list)
             else []
         )
-        holds = f"This token holds: {', '.join(names)}." if names else "This token holds no scopes."
+        # C-D10: say what the token holds only when the body says so. Real Twitch bodies carry no
+        # scopes list, and "holds no scopes" would then be false.
+        holds = f" This token holds: {', '.join(names)}." if isinstance(granted, list) else ""
         return TwitchMcpError(
             "permission",
             "This Twitch token is not authorized for that action",
@@ -872,7 +889,7 @@ class TwitchClient:
             http_status=status,
             retryable=False,
             hint=(
-                f"{scope_hint} {holds} Add that scope to TWITCH_OAUTH_SCOPES in .env, then sign "
+                f"{scope_hint}{holds} Add that scope to TWITCH_OAUTH_SCOPES in .env, then sign "
                 "in again with the connect_twitch_account tool to re-authorize."
             ),
         )
@@ -964,7 +981,8 @@ class TwitchClient:
             headers = self._headers(client_id, bearer)
         route = Route(template=path, path=path, major="")
         started = self._clock()
-        lease = await self.limiter.acquire(APP_CLASS, "POST", path, "")
+        # C9: token exchange, refresh and the mint are never gated by a circuit.
+        lease = await self.limiter.acquire(APP_CLASS, "POST", path, "", circuit=False)
         try:
             try:
                 status, resp_headers, raw = await self._send(
@@ -1043,7 +1061,7 @@ class TwitchClient:
         headers = self._headers(client_id or self._client_id, bearer)
         route = Route(template=OAUTH_VALIDATE_PATH, path=OAUTH_VALIDATE_PATH, major="")
         started = self._clock()
-        lease = await self.limiter.acquire(APP_CLASS, "GET", OAUTH_VALIDATE_PATH, "")
+        lease = await self.limiter.acquire(APP_CLASS, "GET", OAUTH_VALIDATE_PATH, "", circuit=False)
         try:
             try:
                 status, resp_headers, raw = await self._send("GET", url, headers=headers)
@@ -1082,30 +1100,45 @@ class TwitchClient:
         finally:
             lease.release()
 
-    async def fetch_validate(self, bearer: str, *, client_id: str | None = None) -> Response:
-        """``GET /oauth2/validate`` for ``twitch_account_status`` — errors raise, no circuit."""
+    async def fetch_validate(
+        self, bearer: str, *, client_id: str | None = None, token_type: TokenType = APP_CLASS
+    ) -> Response:
+        """``GET /oauth2/validate`` for ``twitch_account_status``: errors raise, never gated.
+
+        ``token_type`` selects the rate-limit bucket only (C9); a validate ``401`` never trips a
+        circuit.
+        """
         url = self._url(self._auth_base, self._auth_host, OAUTH_VALIDATE_PATH, ())
         headers = self._headers(client_id or self._client_id, bearer)
         route = Route(template=OAUTH_VALIDATE_PATH, path=OAUTH_VALIDATE_PATH, major="")
         started = self._clock()
-        lease = await self.limiter.acquire(APP_CLASS, "GET", OAUTH_VALIDATE_PATH, "")
+        lease = await self.limiter.acquire(
+            token_type, "GET", OAUTH_VALIDATE_PATH, "", circuit=False
+        )
         try:
             try:
                 status, resp_headers, raw = await self._send("GET", url, headers=headers)
             except _TooLarge:
-                self._log(route, started, "too_large", token_type=APP_CLASS)
+                self._log(route, started, "too_large", token_type=token_type)
                 raise self._too_large_error() from None
             except httpx.TransportError:
-                self._log(route, started, "transport_error", token_type=APP_CLASS)
+                self._log(route, started, "transport_error", token_type=token_type)
                 raise TwitchMcpError("upstream", "Twitch is unreachable", retryable=True) from None
             lease.learn(resp_headers)
             if 200 <= status < 300:
                 body = _parse_json(raw)
                 if body is not None:
-                    self._log(route, started, "ok", status=status, token_type=APP_CLASS)
+                    self._log(route, started, "ok", status=status, token_type=token_type)
                     return Response(status, body, resp_headers)
             return self._map(
-                "GET", route, status, resp_headers, _parse_json(raw), APP_CLASS, write=False
+                "GET",
+                route,
+                status,
+                resp_headers,
+                _parse_json(raw),
+                token_type,
+                write=False,
+                trip_circuit=False,
             )
         finally:
             lease.release()

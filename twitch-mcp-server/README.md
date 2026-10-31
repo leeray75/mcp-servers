@@ -158,7 +158,7 @@ A `replace-me*` placeholder or a missing required value aborts startup (R7).
 | `TWITCH_ENABLE_WRITES` | `false` | **Security-relevant kill switch 1 of 2.** No write tool exists while false (R28). |
 | `TWITCH_WRITE_GROUPS` | *(empty)* | **Security-relevant kill switch 2 of 2.** Comma-separated subset of `channel,polls,predictions,chat,moderation,roles`. Empty means no group, even when `TWITCH_ENABLE_WRITES=true`. |
 | `TWITCH_CONFIRM_TOKEN_TTL_SECONDS` | `300` | Confirmation-token lifetime (30–3600). Single-use, in-memory (R32). |
-| `TWITCH_IDENTITY_TTL_SECONDS` | `300` | How long a verified moderator/editor status may be cached; invalidated on refresh, disconnect and the first `401` (R30). |
+| `TWITCH_IDENTITY_TTL_SECONDS` | `300` | How long a verified moderator/editor status may be cached; invalidated on refresh, disconnect and the first non-scope `401` of a token class (R30). |
 | `TWITCH_DISABLE_<TOOL>` | `false` | Per-tool kill switch, e.g. `TWITCH_DISABLE_SEND_CHAT_MESSAGE=true` (R36). |
 | `TTL_METADATA_SECONDS` | `300` | Cache for slow-changing metadata and identity verification only (0 disables). |
 | `CACHE_MAX_ENTRIES` / `CACHE_MAX_MB` | `2000` / `64` | Cache bounds. |
@@ -256,6 +256,29 @@ A channel operator who runs polls never needs `moderator:manage:timeouts`; a mod
 Example (own channel + polls, no moderation power):
 `TWITCH_OAUTH_SCOPES=user:read:email channel:manage:broadcast channel:manage:polls polls:read`
 
+**Read tools that need a signed-in user token.** Each row is the scope Twitch's scopes page lists for the endpoint
+(checked 2026-10-31). Twitch's own missing-scope answer is read from its body and reported as `kind=permission`;
+the code holds no scope table (D10).
+
+| Read tool | Scope(s) |
+|---|---|
+| `get_stream_markers` | `user:read:broadcast` |
+| `get_broadcaster_subscribers` | `channel:read:subscriptions` |
+| `get_channel_editors` | `channel:read:editors` |
+| `get_moderators` | `moderation:read` (or `channel:manage:moderators`) |
+| `get_banned_users` | `moderation:read` (or `moderator:manage:banned_users`) |
+| `get_automod_settings` | `moderator:read:automod_settings` |
+| `get_chat_chatters` | `moderator:read:chatters` |
+| `get_channel_chat_settings` (optional fields) | `moderator:read:chat_settings` |
+
+Copy-paste line for the read tools (plus `user:read:email` for sign-in):
+
+```
+TWITCH_OAUTH_SCOPES=user:read:email user:read:broadcast channel:read:subscriptions channel:read:editors moderation:read moderator:read:automod_settings moderator:read:chatters moderator:read:chat_settings
+```
+
+The write-group scopes above stay as they are.
+
 ### Result size (R41)
 
 Results are complete pages; the agent controls size with `first` and the cursors. `tests/test_sizes.py` asserts every
@@ -312,7 +335,7 @@ Four independent things must all be true before a single byte is written to Twit
    from an argument) or a channel where the server has **verified** you appear in Twitch's moderator list (for
    moderation writes) or editor list (for channel-management writes). Your allowlist entry alone is never enough for
    a third-party write (R29). Verification is cached for `TWITCH_IDENTITY_TTL_SECONDS` and thrown away on token
-   refresh, disconnect and the first `401` (R30).
+   refresh, disconnect and the first non-scope `401` of a token class (R30).
 4. **A single-use confirmation token**: the first call to any write tool does **not** write. It runs the guard and
    identity checks, then returns `kind=confirmation_required` with the resolved plan (tool, broadcaster, validated
    argument summary) and a token. Read the plan; call the same tool again with `confirm=<token>` to execute exactly
@@ -365,8 +388,10 @@ twitch:
 - **Rate limits are learned, never hard-coded.** App and user buckets come from `Ratelimit-*` headers (R19/R20). A
   429 parks that bucket; a wait longer than `TWITCH_MAX_RATE_LIMIT_WAIT_SECONDS` fails fast with `retry_after` and
   makes no request. There is no local per-minute budget: Twitch's own limits apply through these headers (R19–R22).
-- **Auth circuit.** The first `401` from the API stops every later upstream request for the process lifetime; tools
-  return `kind=unauthenticated` until you fix the credentials and restart (R24).
+- **Auth circuit.** The first non-scope `401` on a Helix call stops later Helix calls of that token class only (R24,
+  C3). A user-token `401` blocks user Helix reads and writes; an app-token `401` blocks app Helix reads. Token exchange,
+  refresh, revoke and validate are never blocked. The user circuit clears when you sign in again or a refresh stores
+  a new token; the app circuit clears only on restart. A missing scope is `kind=permission` and opens no circuit.
 - **Boot is a probe, not a crash.** The server validates the bases, mints the app token, validates it (and your
   user token when on), then serves. A dead token leaves it **degraded** and visible in `/healthz`
   (`{status, version, tool_count, twitch_reachable}` only — never tokens, ids, logins, scopes or URLs, R3/R50).
@@ -389,7 +414,8 @@ twitch:
 | `kind=unknown_outcome` on a write | The outcome is unknown and the server will **not** retry (R16). Check the channel on Twitch before doing anything else. |
 | `kind=permission` naming a scope | Your token lacks that scope. Add it to `TWITCH_OAUTH_SCOPES` (section 4), then `disconnect_twitch_account` → `connect_twitch_account` to re-consent. |
 | `kind=rate_limited` with `retry_after` | Wait it out; calls are refused, not queued. If it persists past `retry_after`, another consumer of your client id is spending the bucket. |
-| `kind=unauthenticated` for every tool | The `401` circuit opened (R24). Fix the credentials in `.env`, `scripts/restart.sh --recreate`. |
+| `kind=unauthenticated` for every app-token read | The app-token `401` circuit opened (R24). Fix the credentials in `.env`, then `scripts/restart.sh --recreate`. |
+| `kind=unauthenticated` for user-token tools only | The user-token circuit opened (C3). Sign in again with `connect_twitch_account`; a stored new token clears it. |
 | `kind=too_large` | The page exceeds `TWITCH_MAX_RESPONSE_BYTES`. Retry with a smaller `first` (R14). |
 | A user-token tool is missing from `tools/list` | `TWITCH_USER_OAUTH=false` or you have not signed in yet (R36). |
 | A write tool is missing from `tools/list` | `TWITCH_ENABLE_WRITES` is false or its group is not in `TWITCH_WRITE_GROUPS` (R28). This is the default. |

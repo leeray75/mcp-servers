@@ -381,11 +381,6 @@ class TwitchService:
         return self._limiter
 
     @property
-    def auth_failed(self) -> bool:
-        """True once the process-wide 401 circuit is open (R24)."""
-        return bool(self._limiter.auth_failed)
-
-    @property
     def identity_verifier(self) -> IdentityVerifier:
         """The verifier whose cached verdicts must die on refresh, disconnect or the 401 (R30)."""
         return self._identity
