@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- The user-token store moves from the `./data` bind mount to the Docker named volume `twitch-mcp-data`
+  (`docker-compose.oauth.yml`, Amendment 6, V1–V8). A bind-mounted folder on the Windows drive gave the container user
+  files it could not chmod to `0600`, so the token could not be saved (`upstream` outcome). The base deployment still
+  mounts nothing, and the MCP tool set and wire behaviour are unchanged. `setup.sh` creates no folder and prints the
+  volume name.
+- Operator notes: (a) an existing `./data/twitch_user_token.json` is left in place by the upgrade; it is a live refresh
+  token, so delete it after signing in again. (b) Turning `TWITCH_USER_OAUTH` off leaves the volume, and the token,
+  until `docker volume rm twitch-mcp-data`. (c) An existing volume is not re-initialised; Docker copies the image's
+  `/data` ownership only into an empty volume. Legacy upgrade: older versions stored the token in `./data`; delete any
+  `twitch_user_token.json` there after upgrading. Stop and restart keep the token; delete it with
+  `disconnect_twitch_account` or `docker volume rm twitch-mcp-data`.
+
 ### Removed
 
 - Per-minute tool-call budget (R23): `budget.py`, the `TOOL_CALLS_PER_MINUTE` and
@@ -35,8 +49,8 @@ All notable changes to this project are documented here. The format follows [Kee
   guard before any request, with one identical denial message for every lookup failure so the allowlist
   cannot be probed (R25–R27).
 - Optional user identity (`TWITCH_USER_OAUTH=true`, off by default): loopback sign-in routes
-  `GET /oauth/start` and `GET /oauth/callback` with single-use `state`, an `iss` check and a 10-minute
-  TTL (no PKCE — Twitch does not accept `code_challenge`), the two account tools
+  `GET /oauth/start` and `GET /oauth/callback` with single-use `state`, an `iss` check when Twitch supplies
+  one, and a 10-minute TTL (no PKCE — Twitch does not accept `code_challenge`), the two account tools
   `connect_twitch_account` / `disconnect_twitch_account`, and a token store at
   `/data/twitch_user_token.json` written atomically with mode 0600 (the only persistent artifact).
   Refresh runs under one lock; a rejected refresh forces re-auth and never falls back to the app token.
@@ -112,3 +126,12 @@ Corrections made against the first review round, each ruled by the human and rec
   record carries none of the nine strictness levels (previously it returned a successful-looking record of all-absent
   levels), and any value pydantic cannot represent is reported as `kind=upstream` instead of surfacing to the agent as
   an opaque JSON-RPC internal error (R43/R45, G5).
+
+### Fixed
+
+- OAuth sign-in no longer requires an `iss` query parameter, which Twitch does not send; `iss` is still checked
+  when present.
+- OAuth sign-in accepts Twitch's documented `scope` array on the authorization-code exchange and the refresh; the
+  validate login is read from `login`; disconnect revokes the token at Twitch (client id now sent) and deletes the
+  local credential even for a dead token; a refresh rejection clears the stored credential; an app-token mint
+  rejection now points at `TWITCH_CLIENT_ID`/`TWITCH_CLIENT_SECRET`.

@@ -15,8 +15,12 @@ ever opened (R55) and no real credential exists anywhere in this file.
 from __future__ import annotations
 
 import json
+import stat
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from mcp import Client
 from mcp.shared.exceptions import MCPError
@@ -37,6 +41,7 @@ from tests.server_fakes import (
     server_settings,
     tool_names,
 )
+from tests.service_fakes import APP_BEARER
 from tests.twitch_fakes import (
     BROADCASTER,
     FAKE_AUTH_TOKEN,
@@ -48,6 +53,7 @@ from tests.twitch_fakes import (
 )
 from twitch_mcp import __version__
 from twitch_mcp.capabilities import ACCOUNT_TOOLS, ALL_TOOLS, ALL_WRITE_TOOLS, READ_TOOLS
+from twitch_mcp.server import SIGNED_IN_PAGE
 
 # The four SPEC §6.4 lists, spelled out here rather than imported from capabilities.py: importing
 # them would make this a tautology. capabilities.py owns the plan; these literals own the contract.
@@ -647,6 +653,113 @@ async def test_oauth_routes_stay_host_guarded_while_bearer_exempt(
         assert (
             await http.get("/oauth/start", headers={"Origin": "https://evil.example"})
         ).status_code == 403
+
+
+# --------------------------------------------------------------------- I1/I2: the callback and iss
+
+
+def _register_token_exchange(fake: FakeTwitch) -> None:
+    """``POST /oauth2/token`` for both grants, in Twitch's documented shapes (W8, W9).
+
+    The authorization-code body carries ``scope`` as a JSON array and no ``user_id`` or ``login``
+    (neither is in Twitch's documented token body), so ``exchange`` must learn the identity from
+    ``GET /oauth2/validate``. Registered by each test after boot, before its first callback
+    (``FakeTwitch.handle`` serves the first matching override).
+    """
+
+    async def token(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode())
+        if form.get("grant_type") == ["client_credentials"]:
+            return httpx.Response(200, json={"access_token": APP_BEARER, "expires_in": 15_000})
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "fake-user-access",
+                "refresh_token": "fake-user-refresh",
+                "token_type": "bearer",
+                "scope": ["user:read:email"],
+                "expires_in": 14400,
+            },
+        )
+
+    fake.add("POST", r"/oauth2/token", token)
+
+
+def _register_user_validate(fake: FakeTwitch) -> None:
+    """``GET /oauth2/validate`` for the user token only (W9), registered after boot.
+
+    The user access token answers with the documented user body (``login``, ``user_id``, ``scopes``
+    as an array). Any other bearer gets a 404, which is the default fake's answer to an app token
+    that has no body (the boot probe then degrades, as before).
+    """
+
+    async def validate(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("authorization") == "Bearer fake-user-access":
+            return httpx.Response(200, json=dict(VALIDATE_USER))
+        return httpx.Response(404, json={"status": 404, "message": "Not Found"})
+
+    fake.add("GET", r"/oauth2/validate", validate)
+
+
+def _authorization_code_forms(fake: FakeTwitch) -> list[dict[str, list[str]]]:
+    """The form body of every authorization_code POST. The boot mint is client_credentials, so skip it."""
+    forms = [parse_qs(req.content.decode()) for req in fake.requests_for("POST", "/oauth2/token")]
+    return [form for form in forms if form.get("grant_type") == ["authorization_code"]]
+
+
+async def test_oauth_callback_completes_without_iss(
+    fake: FakeTwitch, fclock: FakeClock, tmp_path: Path
+) -> None:
+    """I2 (R47): Twitch's real redirect carries only ``code`` and ``state``; sign-in completes."""
+    _register_token_exchange(fake)
+    settings = server_settings(
+        twitch_user_oauth=True, twitch_oauth_token_file=str(tmp_path / "twitch_user_token.json")
+    )
+    async with running_app(fake, fclock, settings) as app, http_client(app) as http:
+        _register_user_validate(fake)  # after boot, so only the callback's validate is counted
+        started = await http.get("/oauth/start")
+        state = parse_qs(urlparse(started.headers["Location"]).query)["state"][0]
+        validates_before = len(fake.requests_for("GET", "/oauth2/validate"))
+        done = await http.get("/oauth/callback", params={"code": "code-1", "state": state})
+        validates_during = len(fake.requests_for("GET", "/oauth2/validate")) - validates_before
+
+    assert done.status_code == 200
+    assert done.text == SIGNED_IN_PAGE
+    assert validates_during == 1, "the callback identifies the account with one validate call"
+    exchanges = _authorization_code_forms(fake)
+    assert len(exchanges) == 1, "exactly one code exchange on the success path"
+    assert "iss" not in exchanges[0], "the callback had no iss, and the exchange sends none"
+    token_file = tmp_path / "twitch_user_token.json"
+    assert token_file.exists()
+    # Linux-only assertion: POSIX mode bits are not meaningful on the Windows drive (tests run in WSL).
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    assert "code-1" not in done.text and state not in done.text
+
+
+async def test_oauth_callback_refuses_wrong_iss(
+    fake: FakeTwitch, fclock: FakeClock, tmp_path: Path
+) -> None:
+    """I1 (R47): a present, wrong ``iss`` is refused before any exchange, and the flow is dropped."""
+    _register_token_exchange(fake)
+    token_file = tmp_path / "twitch_user_token.json"
+    settings = server_settings(twitch_user_oauth=True, twitch_oauth_token_file=str(token_file))
+    async with running_app(fake, fclock, settings) as app, http_client(app) as http:
+        started = await http.get("/oauth/start")
+        state = parse_qs(urlparse(started.headers["Location"]).query)["state"][0]
+        refused = await http.get(
+            "/oauth/callback",
+            params={"code": "code-1", "state": state, "iss": "https://evil.example"},
+        )
+        assert refused.status_code == 400
+        for echoed in (state, "code-1", "evil.example"):
+            assert echoed not in refused.text
+        assert _authorization_code_forms(fake) == [], "a refused iss spends no code"
+        assert not token_file.exists(), "no token file is written on a refused callback"
+
+        # The flow was dropped: the correct state with no iss now finds no flow.
+        again = await http.get("/oauth/callback", params={"code": "code-1", "state": state})
+        assert again.status_code == 400
+    assert _authorization_code_forms(fake) == [], "still no exchange after the dropped flow"
 
 
 # --------------------------------------------------------------------- R39: refusals before service

@@ -302,8 +302,6 @@ class FakeTwitch:
             "client_id": client_id,
             "login": login,
             "user_id": user_id,
-            "user_login": login,
-            "user_type": "",
             "scopes": scopes or [],
             "expires_in": expires_in,
         }

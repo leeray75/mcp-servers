@@ -6,6 +6,9 @@
 **Amendment 1:** 2026-10-30 (approved by: human, 2026-10-30 00:55 -04:00) — see §0.
 **Amendment 2:** 2026-10-30 (approved by: human, 2026-10-30 08:41 -04:00) — see §0b.
 **Amendment 3:** 2026-10-30 (approved by: human) — see docs/specs/simplification/SPEC.md. Superseded in place by it, text not rewritten: R23 (§5.4), and the inventory lines at §2 (line 93), §5.2 (line 147), §6.1 (line 298), §6.5 (line 405) and the §8 row for `test_budget.py` (line 455).
+**Amendment 4:** 2026-10-31 (approved by: human) — see docs/specs/oauth-iss/SPEC.md.
+**Amendment 5:** 2026-10-31 (approved by: human) — see docs/specs/oauth-wire/SPEC.md.
+**Amendment 6:** 2026-10-31 (approved by: human) — see docs/specs/token-volume/SPEC.md.
 **Process:** [../../AGENTS.md](../../AGENTS.md) (SDD). This file becomes authoritative for the server once approved;
 `AGENTS.md` governs process, this file governs technical invariants.
 
@@ -122,8 +125,9 @@ change like any other requirement:
 - **R1** — The server speaks Streamable HTTP on `0.0.0.0:8000` inside the container; `docker-compose.yml` publishes
   `127.0.0.1:8770:8000` and nothing else. A test asserts the compose string carries the `127.0.0.1:` prefix.
 - **R2** — The container runs as UID 10001 with a read-only rootfs, all capabilities dropped, no-new-privileges, a
-  memory limit, and no host mounts other than `./data` at `/data` (present only when user OAuth is enabled) and
-  `./certs` at `/certs` **read-only** (present only when TLS is configured, T11; never writable).
+  memory limit, and no host folder mounted writable: user OAuth adds one named volume, `twitch-mcp-data`, at `/data`
+  (present only when user OAuth is enabled, Amendment 6), and `./certs` at `/certs` **read-only** (present only when
+  TLS is configured, T11; never writable).
 - **R3** — `GET /healthz` requires no bearer token and returns only `{status, version, tool_count, twitch_reachable}`
   plus the `tls` boolean added by T6 of `docs/specs/tls-oauth-redirect` — never tokens, ids, logins, scopes, URLs or a
   certificate path.
@@ -153,7 +157,7 @@ change like any other requirement:
 - **R12** — Only `TWITCH_API_BASE` and `TWITCH_AUTH_BASE` hosts are contacted. Redirects are never followed; a 3xx is
   an error, not a hop.
 - **R13** — Every request carries both `Client-Id` and `Authorization: Bearer`. A request would-be-sent without either
-  raises before the socket.
+  raises before the socket. Superseded in part by Amendment 5 (W6): the exception also covers `POST /oauth2/revoke`, and only when neither header keyword is passed.
 - **R14** — Response bodies are streamed with a hard byte cap. A body over `TWITCH_MAX_RESPONSE_BYTES` is refused with
   `kind=too_large` and a hint to lower `first` — results are never silently truncated.
 - **R15** — **Reads** retry on 5xx and transport errors, bounded by `TWITCH_MAX_5XX_RETRIES`. **A 503 is retried once**
@@ -251,15 +255,22 @@ change like any other requirement:
   user-token tools, and reads use the app token only.
 - **R47** — On, `GET /oauth/start` and `GET /oauth/callback` are exempt from bearer auth and protected instead by the
   loopback bind, the R5 Host/Origin guard, a single-use random `state`, an `iss` check and a 10-minute TTL.
-- **R48** — The token store is written at `0600` under `/data`, is the sole persistent artifact, and is never
-  serialized into a log, error, resource or tool result.
+  **Superseded in part by Amendment 4 (I1–I3):** the `iss` check applies when a callback presents `iss`; a callback
+  without `iss` (Twitch's real redirect) is not refused. See [`specs/oauth-iss/SPEC.md`](specs/oauth-iss/SPEC.md).
+  Superseded in part by Amendment 5 (W1–W4): the token `scope` may be a JSON array. See [`specs/oauth-wire/SPEC.md`](specs/oauth-wire/SPEC.md).
+- **R48** — The token store is written at `0600` under `/data` (the Docker named volume `twitch-mcp-data`, Amendment 6),
+  is the sole persistent artifact, and is never serialized into a log, error, resource or tool result.
 - **R49** — Refresh happens under one lock; concurrent callers await a single refresh. A refresh failure forces
   re-auth and clears the store, never a silent app-token fallback for a user-only tool.
+  Superseded in part by Amendment 5 (W1–W4, W11): the token `scope` may be a JSON array, a token-endpoint or revoke `400`
+  is `unauthenticated` by status, and only an `unauthenticated` refresh outcome clears the store. See [`specs/oauth-wire/SPEC.md`](specs/oauth-wire/SPEC.md).
 - **R50** — Third-party session rule: the boot probe calls `GET /oauth2/validate` for each present token and, if
   either is invalid, the server starts degraded and reports it — it does not crash and does not keep serving with a
   dead token.
+  Superseded in part by Amendment 5 (W5): the validate login is read from `login`, not `user_login`. See [`specs/oauth-wire/SPEC.md`](specs/oauth-wire/SPEC.md).
 - **R51** — `disconnect_twitch_account` deletes only the server's own stored credential and calls
   `POST /oauth2/revoke`. It performs no other account action.
+  Superseded in part by Amendment 5 (W6–W7): the revoke form carries `client_id` and `token`, and a dead-token `400` still deletes the local credential. See [`specs/oauth-wire/SPEC.md`](specs/oauth-wire/SPEC.md).
 
 ### 5.11 Logging and privacy
 

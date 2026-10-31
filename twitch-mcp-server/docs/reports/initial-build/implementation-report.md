@@ -62,7 +62,7 @@ requirement loses its citation or a test invents a requirement the spec does not
 | R10 | test_config.py::test_authority_case_is_normalised_and_query_free; test_config.py::test_invalid_values_are_rejected_without_echoing_them; test_config.py::test_numeric_boundaries_are_inclusive |
 | R11 | test_guard.py::test_guard_construction_never_touches_the_network; test_network_guard.py::test_twitch_client_is_the_only_module_that_imports_httpx; test_ratelimit.py::test_module_has_no_network_or_io_import |
 | R12 | test_config.py::test_redirect_guard_blocks_a_hopping_client |
-| R13 | test_twitch_client.py::test_a_helix_call_missing_only_the_client_id_is_refused_before_the_socket; test_twitch_client.py::test_client_stores_no_credential; test_twitch_client.py::test_only_the_token_endpoint_may_go_without_credentials |
+| R13 | test_twitch_client.py::test_a_helix_call_missing_only_the_client_id_is_refused_before_the_socket; test_twitch_client.py::test_client_stores_no_credential; test_twitch_client.py::test_revoke_sends_client_id_and_no_headers; test_twitch_client.py::test_revoke_without_client_id_is_refused_before_the_socket |
 | R14 | test_twitch_client.py::test_oversized_response_is_refused_without_leaking_body |
 | R15 | test_twitch_client.py::test_a_5xx_is_retried_up_to_the_documented_bound; test_twitch_client.py::test_a_read_recovers_when_a_retry_succeeds |
 | R16 | test_errors.py::test_unknown_outcome_hint_forbids_a_re_issue; test_twitch_client.py::test_a_read_that_cannot_reach_twitch_is_a_retryable_upstream; test_twitch_client.py::test_a_write_answered_with_an_unreadable_body_is_undetermined |

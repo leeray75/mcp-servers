@@ -62,8 +62,17 @@ scripts/smoke.sh      # optional: calls three read tools through the container a
 On Windows run the `.ps1` twin of any script (for example `.\scripts\start.ps1`); it forwards into WSL2.
 
 `setup.sh` writes `.env` (git-ignored, excluded from the Docker build context). Secrets are never echoed. Run
-`scripts/restart.sh --recreate` after changing `.env`. With `TWITCH_USER_OAUTH=true`, compose additionally mounts
-`./data` for the token file; `setup.sh` creates the folder (the container user UID 10001 must be able to write it).
+`scripts/restart.sh --recreate` after changing `.env`. With `TWITCH_USER_OAUTH=true`, compose additionally mounts the
+Docker named volume `twitch-mcp-data` at `/data` for the token file. The token is kept inside Docker, not in the
+repository tree, and `setup.sh` creates no folder. The volume survives `stop`, `restart`, `rebuild` and `compose down`.
+To delete the stored credential, run `disconnect_twitch_account` (it deletes the file and revokes the token), or after
+`scripts/stop.sh` run `docker volume rm twitch-mcp-data`.
+
+Operator notes: an existing `./data/twitch_user_token.json` is left in place by the upgrade. It is a live refresh
+token, so delete it after you sign in again. Turning `TWITCH_USER_OAUTH` off leaves the volume, and so the token, in
+place until `docker volume rm twitch-mcp-data`. Docker copies the image's `/data` ownership into a new empty volume
+only; an existing volume is not re-initialised. Legacy upgrade: older versions stored the token in `./data`; delete any
+`twitch_user_token.json` there after upgrading.
 
 ### 2.1 HTTPS for the OAuth redirect
 
@@ -413,8 +422,9 @@ only against channels you own or moderate (spec A2/A3).
 - Loopback only (`127.0.0.1:8770`), bearer token on every route but `GET /healthz`, Host and Origin checks, request
   and response size caps, no TLS.
 - Read-only container: non-root UID 10001, read-only root filesystem, all capabilities dropped,
-  `no-new-privileges`, PID/memory/CPU limits. The only host mount is `./data` (user token file, mode 0600), added
-  only when user OAuth is on.
+  `no-new-privileges`, PID/memory/CPU limits. No host folder is mounted writable. User OAuth adds one named volume,
+  `twitch-mcp-data`, at `/data` (user token file, mode 0600), added only when user OAuth is on; TLS adds `./certs`
+  read-only at `/certs`.
 - Only `api.twitch.tv` and `id.twitch.tv` are contacted; the two bases are pinned at startup; redirects are never
   followed; ids, cursors and logins are validated and percent-encoded — no agent-supplied string becomes a raw path
   segment.

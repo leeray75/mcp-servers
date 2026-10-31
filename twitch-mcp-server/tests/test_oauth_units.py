@@ -88,6 +88,35 @@ def test_state_mismatch_and_iss_mismatch(fclock: Any) -> None:
     assert store.claim(fresh.state, "https://evil.example") == REFUSED_ISS
 
 
+def test_absent_iss_is_not_checked_and_the_flow_is_claimed(fclock: Any) -> None:
+    """I2: Twitch's real redirect carries no ``iss``; the check is skipped and the flow is claimed."""
+    store = PendingStore(clock=fclock.clock)
+    flow = store.start(iss=expected_iss(AUTH_BASE), scopes=[])
+    assert store.claim(flow.state, None) is flow
+
+
+def test_correct_iss_is_accepted_when_present(fclock: Any) -> None:
+    """I1: an ``iss`` equal to the expected issuer exactly is accepted."""
+    store = PendingStore(clock=fclock.clock)
+    flow = store.start(iss=expected_iss(AUTH_BASE), scopes=[])
+    assert store.claim(flow.state, expected_iss(AUTH_BASE)) is flow
+
+
+def test_wrong_iss_is_refused_and_drops_the_flow(fclock: Any) -> None:
+    """I1: a present, wrong ``iss`` is refused and the flow is dropped (a second claim finds none)."""
+    store = PendingStore(clock=fclock.clock)
+    flow = store.start(iss=expected_iss(AUTH_BASE), scopes=[])
+    assert store.claim(flow.state, "https://evil.example") == REFUSED_ISS
+    assert store.claim(flow.state, flow.iss) == REFUSED_NO_FLOW
+
+
+def test_empty_iss_is_present_and_refused_never_skipped(fclock: Any) -> None:
+    """I3: ``?iss=`` is present but wrong, so it is refused rather than treated as absent."""
+    store = PendingStore(clock=fclock.clock)
+    flow = store.start(iss=expected_iss(AUTH_BASE), scopes=[])
+    assert store.claim(flow.state, "") == REFUSED_ISS
+
+
 def test_state_expires_after_ten_minutes(fclock: Any) -> None:
     assert PENDING_TTL_SECONDS == 600.0
     store = PendingStore(clock=fclock.clock)
@@ -258,14 +287,37 @@ async def test_disconnect_revokes_and_touches_nothing_else(tmp_path: Path, fcloc
     auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
     auth.attach_revoke(revoke)
     auth.attach_validate(validate)
+    auth.set_credentials(CLIENT_ID, CLIENT_SECRET)  # revoke needs the app's client id (W6)
     auth.install(_token())
     invalidated: list[bool] = []
     auth.on_invalidate(lambda: invalidated.append(True))
     user_id = await auth.disconnect()
     assert user_id == OPERATOR
     assert len(calls) == 1  # exactly one POST /oauth2/revoke (R51)
+    assert calls[0]["client_id"] == CLIENT_ID, "W6: the revoke form carries the client id"
     assert auth.token is None and not (tmp_path / "token.json").exists()
     assert invalidated == [True]  # identity cache + confirm tokens cleared (R30/R33)
+
+
+async def test_disconnect_without_client_id_skips_revoke_and_deletes(
+    tmp_path: Path, fclock: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """W7: with no client id, disconnect sends no revoke, logs ``revoke_skipped``, and still deletes."""
+    calls: list[dict[str, Any]] = []
+
+    async def revoke(form: Any) -> tuple[int, Any]:
+        calls.append(dict(form))
+        return (200, {})
+
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+    auth.attach_revoke(revoke)
+    auth.install(_token())
+    user_id = await auth.disconnect()
+    assert user_id == OPERATOR
+    assert calls == [], "no revoke is sent without a client id"
+    assert auth.token is None and not (tmp_path / "token.json").exists()
+    outcomes = [getattr(record, "outcome", None) for record in caplog.records]
+    assert "revoke_skipped" in outcomes
 
 
 async def test_disconnect_without_connection_is_a_noop(tmp_path: Path, fclock: Any) -> None:
@@ -298,11 +350,30 @@ async def _noop_revoke(form: Any) -> tuple[int, Any]:
     return (200, {})
 
 
+_PENDING_STATE: Any = object()  # sentinel: "send pending.state" (any other value is sent as-is)
+
+
+async def _callback(
+    flow: OAuthFlow,
+    pending: Any,
+    *,
+    state: Any = _PENDING_STATE,
+    iss: str | None = None,
+    code: str = "code-1",
+) -> Any:
+    """One browser callback, as Twitch's real redirect sends it: ``code`` and ``state``, no ``iss``.
+
+    ``iss`` is omitted by default (I-D2), mirroring Twitch. Pass it only to exercise the ``iss`` check.
+    """
+    sent_state = pending.state if state is _PENDING_STATE else state
+    return await flow.complete(code=code, state=sent_state, iss=iss)
+
+
 _GRANT_OK = {
     "access_token": "a",
     "refresh_token": "r",
     "token_type": "bearer",
-    "scope": "user:read:email",
+    "scope": ["user:read:email"],
     "expires_in": 14400,
 }
 
@@ -318,7 +389,7 @@ async def test_flow_complete_forces_reauth_on_a_refused_grant(tmp_path: Path, fc
     pending = flow.start()
 
     with pytest.raises(TwitchMcpError) as exc:
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
 
     assert exc.value.kind == "unauthenticated"
     assert exc.value.http_status == 400
@@ -340,7 +411,7 @@ async def test_flow_complete_reports_bad_client_credentials_on_a_401(
     pending = flow.start()
 
     with pytest.raises(TwitchMcpError) as exc:
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
 
     assert exc.value.kind == "unauthenticated"
     assert exc.value.http_status == 401
@@ -359,7 +430,7 @@ async def test_flow_complete_marks_an_oauth_server_error_retryable(
     pending = flow.start()
 
     with pytest.raises(TwitchMcpError) as exc:
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
 
     assert exc.value.kind == "upstream"
     assert exc.value.retryable is True
@@ -379,7 +450,7 @@ async def test_flow_complete_reports_an_unexpected_oauth_rejection(
     pending = flow.start()
 
     with pytest.raises(TwitchMcpError) as exc:
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
 
     assert exc.value.kind == "upstream"
     assert exc.value.http_status == 403
@@ -404,7 +475,7 @@ async def test_flow_complete_refuses_a_token_whose_account_it_cannot_identify(
     pending = flow.start()
 
     with pytest.raises(TwitchMcpError) as exc:
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
 
     assert asked, "R29: the grant omitted user_id, so validate is the only authority"
     assert exc.value.kind == "upstream"
@@ -429,7 +500,7 @@ async def test_flow_complete_refuses_a_token_validate_rejects(tmp_path: Path, fc
     pending = flow.start()
 
     with pytest.raises(TwitchMcpError) as exc:
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
 
     assert asked, "the refusal has to come from validate, not from a malformed grant"
     assert exc.value.kind == "unauthenticated"
@@ -452,7 +523,7 @@ async def test_flow_complete_refuses_when_no_validate_source_exists(
     pending = flow.start()
 
     with pytest.raises(TwitchMcpError) as exc:
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
 
     assert len(granted) == 1, "the exchange ran; the refusal is about identity, not the grant"
     assert exc.value.kind == "upstream"
@@ -472,12 +543,19 @@ async def test_flow_complete_refuses_state_mismatch_and_consumes_flow(
     flow.attach(grant=grant, revoke=_noop_revoke)
     pending = flow.start()
     with pytest.raises(TwitchMcpError):
-        await flow.complete(code="code-1", state="wrong", iss=pending.iss)
+        await _callback(flow, pending, state="wrong")
     assert exchanges == []  # no token request on a refused callback
     # Even with the right state now, the flow was consumed by the attempt (single-use):
     with pytest.raises(TwitchMcpError):
-        await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+        await _callback(flow, pending)
     assert exchanges == []
+
+
+def test_build_token_joins_a_documented_scope_array() -> None:
+    """W1 (W-D1): Twitch's documented token body carries ``scope`` as an array of strings."""
+    body = {**_GRANT_OK, "scope": ["channel:moderate", "chat:edit", "chat:read"]}
+    token = build_token(body, now=0.0)
+    assert token.scope == "channel:moderate chat:edit chat:read"
 
 
 async def test_flow_complete_happy_path_installs_token(tmp_path: Path, fclock: Any) -> None:
@@ -491,10 +569,8 @@ async def test_flow_complete_happy_path_installs_token(tmp_path: Path, fclock: A
                 "access_token": "a",
                 "refresh_token": "r",
                 "token_type": "bearer",
-                "scope": "user:read:email",
+                "scope": ["user:read:email"],
                 "expires_in": 14400,
-                "user_id": OPERATOR,
-                "login": "operator_login",
             },
         )
 
@@ -503,9 +579,190 @@ async def test_flow_complete_happy_path_installs_token(tmp_path: Path, fclock: A
 
     flow.attach(grant=grant, revoke=_noop_revoke, validate=validate)
     pending = flow.start()
-    outcome = await flow.complete(code="code-1", state=pending.state, iss=pending.iss)
+    # I2: no iss, as Twitch's real redirect sends it. Fails against the pre-fix `iss is None` check.
+    outcome = await _callback(flow, pending)
     assert outcome == OPERATOR  # complete() returns the connected user id (R49)
     assert flow.connected is True
     assert flow.user_id == OPERATOR
     assert flow.auth.token is not None
     assert stat.S_IMODE(flow.token_file.stat().st_mode) == 0o600
+
+
+# ---------------------------------------------------------- W1-W3, W5, W7, W11: the wire shapes
+
+
+@pytest.mark.parametrize(
+    "scope", [5, {}, True, ["a", 1]], ids=["number", "object", "bool", "mixed"]
+)
+def test_build_token_refuses_other_scope_shapes(scope: Any) -> None:
+    """W3: any other scope shape is malformed, with no token built."""
+    with pytest.raises(TwitchMcpError) as exc:
+        build_token({**_GRANT_OK, "scope": scope}, now=0.0)
+    assert exc.value.kind == "upstream"
+
+
+def test_build_token_keeps_a_plain_string_scope_and_an_empty_array_is_empty() -> None:
+    """W1/W2: a string scope is unchanged; an empty array is the empty string."""
+    assert build_token({**_GRANT_OK, "scope": "chat:read"}, now=0.0).scope == "chat:read"
+    assert build_token({**_GRANT_OK, "scope": []}, now=0.0).scope == ""
+
+
+def test_build_token_exchange_requires_scope() -> None:
+    """W2: an exchange with no scope at all is malformed."""
+    body = {k: v for k, v in _GRANT_OK.items() if k != "scope"}
+    with pytest.raises(TwitchMcpError) as exc:
+        build_token(body, now=0.0)
+    assert exc.value.kind == "upstream"
+
+
+def test_build_token_refresh_keeps_fallback_scope_when_absent_or_empty() -> None:
+    """W2: on a refresh, an absent, null, empty-string or empty-array scope keeps the fallback."""
+    fallback = build_token(_GRANT_OK, now=0.0)
+    empties: list[Any] = [None, "", []]
+    for scope in empties:
+        body = {k: v for k, v in _GRANT_OK.items() if k != "scope"}
+        body["scope"] = scope
+        renewed = build_token(body, now=1.0, fallback=fallback)
+        assert renewed.scope == fallback.scope
+
+
+async def test_refresh_joins_an_array_scope(tmp_path: Path, fclock: Any) -> None:
+    """W1: the refresh response carries the same documented array scope."""
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+    auth.set_credentials(CLIENT_ID, CLIENT_SECRET)
+
+    async def grant(form: Any) -> tuple[int, Any]:
+        assert form["grant_type"] == "refresh_token"
+        return (
+            200,
+            {
+                "access_token": "new",
+                "refresh_token": "r2",
+                "token_type": "bearer",
+                "scope": ["channel:moderate", "chat:read"],
+                "expires_in": 14400,
+            },
+        )
+
+    auth.attach_grant(grant)
+    auth.install(_token(expires_at=0.0))
+    renewed = await auth.refresh_now()
+    assert renewed.scope == "channel:moderate chat:read"
+
+
+async def test_exchange_takes_login_from_validate(tmp_path: Path, fclock: Any) -> None:
+    """W5: the validate login is the documented ``login`` field; ``user_login`` is ignored."""
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+
+    async def grant(form: Any) -> tuple[int, Any]:
+        return (
+            200,
+            {
+                "access_token": "a",
+                "refresh_token": "r",
+                "token_type": "bearer",
+                "scope": ["chat:read"],
+                "expires_in": 14400,
+            },
+        )
+
+    async def validate(_bearer: str) -> tuple[int, Any]:
+        return (200, {"user_id": OPERATOR, "login": "operator_login", "scopes": []})
+
+    auth.attach_grant(grant)
+    auth.attach_validate(validate)
+    token = await auth.exchange("code", "https://x/cb", CLIENT_ID, CLIENT_SECRET)
+    assert token.user_id == OPERATOR and token.user_login == "operator_login"
+
+
+async def test_exchange_ignores_user_login_in_validate(tmp_path: Path, fclock: Any) -> None:
+    """W5: a validate body with only ``user_login`` gives an empty login."""
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+
+    async def grant(form: Any) -> tuple[int, Any]:
+        return (
+            200,
+            {
+                "access_token": "a",
+                "refresh_token": "r",
+                "token_type": "bearer",
+                "scope": ["chat:read"],
+                "expires_in": 14400,
+            },
+        )
+
+    async def validate(_bearer: str) -> tuple[int, Any]:
+        return (200, {"user_id": OPERATOR, "user_login": "operator_login", "scopes": []})
+
+    auth.attach_grant(grant)
+    auth.attach_validate(validate)
+    token = await auth.exchange("code", "https://x/cb", CLIENT_ID, CLIENT_SECRET)
+    assert token.user_login == ""
+
+
+async def test_disconnect_deletes_when_revoke_refuses_a_dead_token(
+    tmp_path: Path, fclock: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """W7: a revoke that raises unauthenticated (400) still deletes the local credential."""
+
+    async def revoke(form: Any) -> tuple[int, Any]:
+        raise TwitchMcpError("unauthenticated", "Twitch refused", http_status=400)
+
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+    auth.attach_revoke(revoke)
+    auth.set_credentials(CLIENT_ID, CLIENT_SECRET)
+    auth.install(_token())
+    assert await auth.disconnect() == OPERATOR
+    assert auth.token is None and not (tmp_path / "token.json").exists()
+    assert "revoke_refused" in [getattr(r, "outcome", None) for r in caplog.records]
+
+
+async def test_disconnect_keeps_the_credential_when_revoke_is_upstream(
+    tmp_path: Path, fclock: Any
+) -> None:
+    """W7: a revoke that fails upstream (404, 5xx) keeps the local credential."""
+
+    async def revoke(form: Any) -> tuple[int, Any]:
+        raise TwitchMcpError("upstream", "Twitch's OAuth service rejected the request")
+
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+    auth.attach_revoke(revoke)
+    auth.set_credentials(CLIENT_ID, CLIENT_SECRET)
+    auth.install(_token())
+    with pytest.raises(TwitchMcpError):
+        await auth.disconnect()
+    assert auth.token is not None and (tmp_path / "token.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("grant_result", "clears"),
+    [
+        ("raise_unauthenticated", True),
+        ("raise_upstream_retryable", False),
+        ("status_500", False),
+    ],
+    ids=["unauthenticated_raise_clears", "retryable_raise_keeps", "500_status_keeps"],
+)
+async def test_refresh_clears_the_store_only_on_unauthenticated(
+    tmp_path: Path, fclock: Any, grant_result: str, clears: bool
+) -> None:
+    """W11 (W-D6): only an unauthenticated refresh outcome forces re-auth and clears the store."""
+
+    async def grant(form: Any) -> tuple[int, Any]:
+        if grant_result == "raise_unauthenticated":
+            raise TwitchMcpError("unauthenticated", "refused", http_status=400)
+        if grant_result == "raise_upstream_retryable":
+            raise TwitchMcpError("upstream", "unreachable", retryable=True)
+        return (500, {})
+
+    auth = UserAuth(TokenStore(tmp_path / "token.json"), clock=fclock.clock)
+    auth.set_credentials(CLIENT_ID, CLIENT_SECRET)
+    auth.attach_grant(grant)
+    auth.install(_token(expires_at=0.0))
+    with pytest.raises(TwitchMcpError):
+        await auth.refresh_now()
+    if clears:
+        assert auth.token is None and auth.last_error == "refresh_rejected"
+        assert not (tmp_path / "token.json").exists()
+    else:
+        assert auth.token is not None

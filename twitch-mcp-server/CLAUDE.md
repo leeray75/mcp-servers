@@ -61,7 +61,9 @@ log or commit it.
   registration time).
 - `service.py` `TwitchService`: one method per tool (guard → identity → confirmation (writes) → client → projection).
 - `twitch_client.py` **the only module that imports httpx** (pinned by a grep test, R11): host pinning to the two
-  bases, `GET`/`POST`/`PATCH`/`PUT`/`DELETE`, `Client-Id` + `Bearer` asserted before the socket (R13), redirects
+  bases, `GET`/`POST`/`PATCH`/`PUT`/`DELETE`, `Client-Id` + `Bearer` asserted before the socket (R13), except
+  `POST /oauth2/token` and `POST /oauth2/revoke`, which carry identifiers in the form body (W6): the token request
+  carries `client_id` and `client_secret`; revoke carries `client_id` and the token being revoked, nothing else. Redirects
   refused (R12), streamed byte cap (R14), read retries on 5xx/transport with a single 503 retry (R15), **no write
   retries ever** (R16), 429 bucket parking (R21/R22), the `401` circuit (R24), Helix list-repeat query encoding and
   validated/percent-encoded path segments (R17/R18), numeric-code error mapping, and the two fixed
@@ -152,17 +154,19 @@ log or commit it.
   `client_secret`, `access_token`, `refresh_token`, `code=`); a test asserts each pattern.
 - **OAuth** (R46–R51): off by default, then no `/oauth/*` routes, no token file, no account tools and app-token
   reads only. When on, the two routes are exempt from bearer auth and protected instead by the loopback bind, the
-  Host/Origin guard, single-use `state`, an `iss` check and a 10-minute TTL. The `0600` store under `/data` is the
+  Host/Origin guard, single-use `state`, an `iss` check when Twitch supplies one, and a 10-minute TTL. The `0600` store under `/data` is the
   **sole** persistent artifact. Refresh runs under one lock; a refresh failure forces re-auth and clears the store —
-  never a silent app-token fallback for a user-only tool (R49).
+  never a silent app-token fallback for a user-only tool (R49). Token `scope` is accepted as a JSON array or a string,
+  a token-endpoint or revoke 400 is `unauthenticated` by status, and a refresh rejection clears the store (Amendment 5, W1–W12).
 - **State is process-wide** (cache, buckets, circuit, confirmations). Nothing is keyed to an MCP session or
   connection (spec §7).
 - **Tests never touch the network** (R55): an autouse fixture fails any real socket use; fixtures are synthetic and
   stay under 50 KB. `make check` is the gate (R56) with the 90% branch coverage floor; `requirements*.txt` are
   hash-pinned and regenerated only by `make lock`.
 - **Container** (R1/R2): `127.0.0.1:8770:8000` only, UID 10001, read-only rootfs, `cap_drop: ALL`,
-  `no-new-privileges`, memory limit, tmpfs `/tmp`, and the only host mount is `./data` at `/data` from
-  `docker-compose.oauth.yml`. A test asserts the compose string carries the `127.0.0.1:` prefix (R1). When TLS is configured, `./certs` is mounted read-only at `/certs` (T11).
+  `no-new-privileges`, memory limit, tmpfs `/tmp`. No host folder is mounted writable: user OAuth adds one named
+  volume, `twitch-mcp-data`, at `/data` from `docker-compose.oauth.yml`. A test asserts the compose string carries the
+  `127.0.0.1:` prefix (R1). When TLS is configured, `./certs` is mounted read-only at `/certs` (T11).
 - **TLS** (T1–T4, T6, T7, T9–T12, S5–S7): both TLS variables or neither (T1); plain HTTP unchanged when neither is
   set (T2); `redirect_uri` and `sign_in_url` use `https` when TLS is on (T3); the key's mode is not checked and key
   permissions are the operator's responsibility (S5); `/healthz` reports `tls` and needs no bearer (T6).

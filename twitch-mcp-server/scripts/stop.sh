@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stop and remove the container. The only artifact on disk is the user OAuth token file under
-# ./data (kept); nothing else is lost.
+# Stop and remove the container. The user OAuth token, if any, is kept in the Docker volume
+# twitch-mcp-data: this script never removes named volumes, so the token survives.
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"

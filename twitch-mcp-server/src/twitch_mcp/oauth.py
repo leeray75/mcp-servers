@@ -8,7 +8,7 @@ here:
   (R46). **No PKCE** (spec D8): Twitch rejects ``code_challenge`` and the client secret is required
   at exchange, so a verifier would be theatre.
 * :class:`PendingStore` — at most one in-flight sign-in, with a single-use random ``state``, an
-  ``iss`` check and a 10-minute TTL (R47).
+  ``iss`` check when present and a 10-minute TTL (R47).
 * :class:`TokenStore` — the ``0600`` token file, the server's only persistent artifact (R48).
 * :class:`UserAuth` / :class:`OAuthFlow` — the token, refresh under **one lock** so concurrent
   callers await a single refresh, and disconnect that revokes and deletes (R49-R51).
@@ -63,11 +63,6 @@ REFUSED_ISS: Final = "iss_mismatch"
 
 CONNECT_HINT: Final = "Open the sign-in page returned by connect_twitch_account, then retry."
 NOT_CONNECTED_MESSAGE: Final = "No Twitch account is connected to this server"
-#: An OAuth error code meaning "that grant is gone"; it forces re-auth rather than a retry (R49).
-_REAUTH_ERRORS: Final[frozenset[str]] = frozenset(
-    {"invalid_grant", "invalid_refresh", "unsupported_grant_type", "access_denied"}
-)
-
 Clock = Callable[[], float]
 #: ``POST /oauth2/token``: takes the form fields, returns ``(status, parsed_body)``.
 TokenGrant = Callable[[Mapping[str, str]], Awaitable[tuple[int, Any]]]
@@ -91,7 +86,7 @@ def new_state() -> str:
 
 
 def expected_iss(auth_base: str) -> str:
-    """The exact ``iss`` the callback must carry: the auth base, no trailing slash (R47)."""
+    """The exact ``iss`` checked when present: the auth base, no trailing slash (R47)."""
     return auth_base.rstrip("/")
 
 
@@ -125,7 +120,7 @@ def _same(presented: str, expected: str) -> bool:
 
 @dataclass(slots=True)
 class PendingFlow:
-    """One in-memory sign-in attempt: ``state``, ``iss`` and expiry in epoch seconds (R47)."""
+    """One in-memory sign-in attempt: ``state``, ``iss`` (checked when present) and expiry (R47)."""
 
     state: str
     iss: str
@@ -135,7 +130,7 @@ class PendingFlow:
 
 
 class PendingStore:
-    """At most one pending flow: single-use random ``state``, ``iss`` check, 10-minute TTL (R47)."""
+    """At most one pending flow: single-use ``state``, ``iss`` when present, 10-minute TTL (R47)."""
 
     def __init__(
         self,
@@ -168,6 +163,7 @@ class PendingStore:
         """Consume the pending flow, or return the reason it was refused (R47).
 
         Any call consumes it, so a replayed callback is refused even with a correct ``state``.
+        ``iss`` is checked when present; an absent ``iss`` (Twitch's real redirect) is not refused.
         """
         flow, self._flow = self._flow, None
         if flow is None:
@@ -180,7 +176,7 @@ class PendingStore:
         if state is None or not _same(state, flow.state):
             self._drop(flow, state)
             return REFUSED_STATE
-        if iss is None or not _same(iss, flow.iss):
+        if iss is not None and not _same(iss, flow.iss):
             self._drop(flow, state)
             return REFUSED_ISS
         return flow
@@ -245,10 +241,28 @@ class TokenFileInvalid(Exception):
         self.reason = reason
 
 
+def _normalise_scope(scope: Any) -> str | None:
+    """A token response's ``scope`` as the stored space-joined string (W1–W3).
+
+    ``None`` (absent or ``null``) stays ``None``; a ``str`` is kept; a JSON array whose elements are
+    all ``str`` is joined with single spaces. Any other shape is refused as ``malformed``, and the
+    refusal names the field, never its value (R52).
+    """
+    if scope is None or isinstance(scope, str):
+        return scope
+    if isinstance(scope, list) and all(isinstance(item, str) for item in scope):
+        return " ".join(scope)
+    raise TwitchMcpError(
+        "upstream", "Twitch returned an unexpected token response", hint=CONNECT_HINT
+    )
+
+
 def build_token(body: Any, *, now: float, fallback: UserToken | None = None) -> UserToken:
     """Turn a ``POST /oauth2/token`` response into a :class:`UserToken` (R49).
 
-    Raises ``kind=upstream`` when the shape is wrong. Only field presence and type are examined;
+    ``scope`` is Twitch's documented JSON array of strings (joined with single spaces into the
+    stored string) or a plain string; any other shape is refused (W1–W3). Raises
+    ``kind=upstream`` when the shape is wrong. Only field presence and type are examined;
     no value is ever echoed (R52). On a refresh (``fallback`` given) a missing ``refresh_token`` or
     ``scope`` keeps the previous value, because Twitch may omit them.
     """
@@ -260,7 +274,7 @@ def build_token(body: Any, *, now: float, fallback: UserToken | None = None) -> 
     access = body.get("access_token")
     refresh = body.get("refresh_token")
     token_type = body.get("token_type")
-    scope = body.get("scope")
+    scope = _normalise_scope(body.get("scope"))
     expires_in = body.get("expires_in")
     if fallback is not None:
         refresh = refresh or fallback.refresh_token.get_secret_value()
@@ -272,7 +286,7 @@ def build_token(body: Any, *, now: float, fallback: UserToken | None = None) -> 
         raise malformed
     if not isinstance(token_type, str) or token_type.lower() != "bearer":
         raise malformed
-    if not isinstance(scope, str):
+    if scope is None:
         raise malformed
     if isinstance(expires_in, bool) or not isinstance(expires_in, int) or expires_in <= 0:
         raise malformed
@@ -599,13 +613,22 @@ class UserAuth:
             token = self.token
             user_id = token.user_id if token is not None else None
             if token is not None and self._revoke is not None:
-                try:
-                    await self._revoke({"token": token.access_token.get_secret_value()})
-                except TwitchMcpError as exc:
-                    if exc.kind != "unauthenticated":
-                        raise
-                    # An already-dead token still means the local credential must go (R51).
-                    logger.warning("twitch revoke refused", extra={"outcome": "revoke_refused"})
+                if not self._client_id:
+                    # Revoke needs the app's client id in the form (W6); without it, skip the call.
+                    logger.warning("twitch revoke skipped", extra={"outcome": "revoke_skipped"})
+                else:
+                    try:
+                        await self._revoke(
+                            {
+                                "client_id": self._client_id,
+                                "token": token.access_token.get_secret_value(),
+                            }
+                        )
+                    except TwitchMcpError as exc:
+                        if exc.kind != "unauthenticated":
+                            raise
+                        # An already-dead token still means the local credential must go (R51).
+                        logger.warning("twitch revoke refused", extra={"outcome": "revoke_refused"})
             self.forget()
             return user_id
 
@@ -659,15 +682,15 @@ class UserAuth:
                 raise TwitchMcpError(
                     "upstream", "Twitch account refresh is not configured", hint=CONNECT_HINT
                 )
-            status, body = await self._grant(
-                {
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                    "grant_type": "refresh_token",
-                    "refresh_token": token.refresh_token.get_secret_value(),
-                }
-            )
             try:
+                status, body = await self._grant(
+                    {
+                        "client_id": self._client_id,
+                        "client_secret": self._client_secret,
+                        "grant_type": "refresh_token",
+                        "refresh_token": token.refresh_token.get_secret_value(),
+                    }
+                )
                 renewed = self._token_or_raise(status, body, CONNECT_HINT, fallback=token)
             except TwitchMcpError as exc:
                 if exc.kind == "unauthenticated":
@@ -682,11 +705,10 @@ class UserAuth:
     def _token_or_raise(
         self, status: int, body: Any, hint: str, *, fallback: UserToken | None = None
     ) -> UserToken:
-        """Decide a token-endpoint answer from status and Twitch's ``error`` code (R44)."""
+        """Decide a token-endpoint answer by status alone (R44, W4): any 400 means re-auth."""
         if 200 <= status < 300:
             return build_token(body, now=self._clock(), fallback=fallback)
-        error = body.get("error") if isinstance(body, Mapping) else None
-        if status == 400 and isinstance(error, str) and error in _REAUTH_ERRORS:
+        if status == 400:
             raise TwitchMcpError(
                 "unauthenticated",
                 "Twitch refused that grant; sign in again",
@@ -729,7 +751,7 @@ class UserAuth:
                 hint=CONNECT_HINT,
             )
         user_id = body.get("user_id")
-        login = body.get("user_login")
+        login = body.get("login")
         if not isinstance(user_id, str) or not user_id:
             raise TwitchMcpError(
                 "upstream",
@@ -830,7 +852,7 @@ class OAuthFlow:
 
     @property
     def iss(self) -> str:
-        """The exact ``iss`` this deployment's callback must carry (R47)."""
+        """The exact ``iss`` this deployment's callback is checked against when present (R47)."""
         return expected_iss(self._auth_base)
 
     @property

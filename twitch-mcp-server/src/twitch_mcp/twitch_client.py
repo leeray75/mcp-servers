@@ -934,23 +934,34 @@ class TwitchClient:
     ) -> tuple[int, Any]:
         """POST a form to exactly one fixed ``id.twitch.tv/oauth2/*`` path. Never retried (R16).
 
-        ``/oauth2/token`` legitimately has no credential yet, so it is the only endpoint that may
-        go without ``Client-Id``/``Authorization`` when the caller passes neither; anything else
-        without both is refused (R13). No token, code or ``state`` value reaches a log (R52).
+        ``/oauth2/token`` and ``/oauth2/revoke`` carry their identifiers in the form body, so they
+        may go without ``Client-Id``/``Authorization``: the token request carries the client id and
+        secret, and revoke carries the client id and the token (W6). On ``/oauth2/token`` the
+        exception applies only when the caller passes neither keyword. On ``/oauth2/revoke`` any
+        keyword is refused before the socket, and a form without a non-empty ``client_id`` is
+        refused too. Anything else still needs both headers or is refused (R13). No token, code or
+        ``state`` value reaches a log (R52).
         """
         if path not in {OAUTH_TOKEN_PATH, OAUTH_REVOKE_PATH}:
             raise TwitchMcpError("upstream", "That OAuth path is not one this server may call")
         url = self._url(self._auth_base, self._auth_host, path, ())
-        # ``/oauth2/token`` is what *produces* the credential, so it is the one request allowed to
-        # carry neither credential header: client id and secret travel in the form body, which is
-        # how the client_credentials grant works. The exception is keyed on that exact path, not on
-        # "the caller passed nothing", so no other endpoint can borrow it and every other request
-        # still needs both headers or is refused before the socket (R13).
-        headers = (
-            {}
-            if path == OAUTH_TOKEN_PATH and client_id is None and bearer is None
-            else self._headers(client_id, bearer)
-        )
+        # The header exception is keyed on the exact path and, for the token request, on the
+        # caller passing no keyword, so no other endpoint can borrow it and every other request
+        # still needs both headers or is refused before the socket (R13). Revoke never carries
+        # the headers: a keyword on that path is a caller bug, and a missing client id cannot be
+        # sent (W6, R2-1).
+        if path == OAUTH_REVOKE_PATH:
+            if client_id is not None or bearer is not None:
+                raise TwitchMcpError(
+                    "unauthenticated", "Revoke is sent without Client-Id or Authorization"
+                )
+            if not form.get("client_id"):
+                raise TwitchMcpError("unauthenticated", "Revoke needs the client id in the form")
+            headers: dict[str, str] = {}
+        elif client_id is None and bearer is None and path == OAUTH_TOKEN_PATH:
+            headers = {}
+        else:
+            headers = self._headers(client_id, bearer)
         route = Route(template=path, path=path, major="")
         started = self._clock()
         lease = await self.limiter.acquire(APP_CLASS, "POST", path, "")
@@ -977,23 +988,32 @@ class TwitchClient:
                 self._log(route, started, "ok", status=status, token_type=APP_CLASS)
                 return status, body
             self._log(route, started, "oauth_error", status=status, token_type=APP_CLASS)
-            raise self._oauth_error(status, body)
+            raise self._oauth_error(status, body, path, form.get("grant_type"))
         finally:
             lease.release()
 
-    def _oauth_error(self, status: int, body: Any) -> TwitchMcpError:
-        """An OAuth failure decided by status and Twitch's ``error`` code (R44), never its text."""
-        error = _field(body, "error")
-        if status == 400 and error in {
-            "invalid_grant",
-            "invalid_request",
-            "unsupported_grant_type",
-        }:
+    def _oauth_error(self, status: int, body: Any, path: str, grant: str | None) -> TwitchMcpError:
+        """An OAuth failure decided by status and path/grant (R44, W4, W12), never by its text.
+
+        Every ``400`` is ``unauthenticated`` whatever its body: Twitch's documented 400 bodies carry
+        no ``error`` code this server could key on. The hint is chosen by path first, then by the
+        form's ``grant_type``; ``body`` is not read here, so no value reaches the message (R52).
+        """
+        del body  # decided by status, path and grant only (W4)
+        if status == 400:
+            if path == OAUTH_REVOKE_PATH:
+                hint: str | None = None
+            elif grant == "client_credentials":
+                hint = "Check TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env and restart."
+            elif grant in {"authorization_code", "refresh_token"}:
+                hint = "Use the connect_twitch_account tool to re-authorize the Twitch account."
+            else:
+                hint = "Check the OAuth request and retry."
             return TwitchMcpError(
                 "unauthenticated",
                 "Twitch refused those OAuth credentials for this grant",
                 http_status=status,
-                hint="Use the connect_twitch_account tool to re-authorize the Twitch account.",
+                hint=hint,
             )
         if status == 401:
             return TwitchMcpError(
@@ -1056,7 +1076,7 @@ class TwitchClient:
                 "ok",
                 scopes=granted,
                 user_id=user if isinstance(user, str) and user else None,
-                user_login=_field(body, "user_login"),
+                user_login=_field(body, "login"),
                 expires_in=expires_in if usable else None,
             )
         finally:

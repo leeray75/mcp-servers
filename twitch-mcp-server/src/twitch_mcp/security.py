@@ -6,7 +6,8 @@ without touching its streaming responses. Rejections carry no detail about which
 The bearer token covers every route except ``GET /healthz`` (R4). When user OAuth is enabled, the
 two ``/oauth/*`` paths are additionally answered without a bearer token (R47) and only for ``GET``;
 the Host/Origin guard still applies to them (R5), which is what makes the exemption safe alongside
-the loopback bind, the single-use ``state``, the ``iss`` check and the 10-minute flow TTL.
+the loopback bind, the single-use ``state``, the ``iss`` check when present and the
+10-minute flow TTL.
 
 The Origin check accepts both ``http`` and ``https`` unconditionally, so turning TLS on needs no
 change there: a loopback browser arriving over either scheme is equally loopback (T7). There is no

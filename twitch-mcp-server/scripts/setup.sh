@@ -235,13 +235,8 @@ TMP_FILE=""
 chmod 600 "${ENV_FILE}" 2>/dev/null || true
 client_secret=""
 if [ "${oauth_enabled}" -eq 1 ]; then
-  # R48: the token folder the compose override mounts. Created here, git-ignored.
-  # No chmod here: the container user (UID 10001) must be able to write this folder, and forcing a
-  # mode could lock it out; the token file itself is always written 0600.
-  mkdir -p "${ROOT_DIR}/data"
-  printf 'Token folder: %s\n' "${ROOT_DIR}/data"
-  printf 'The container user (UID 10001) must be able to write it. On a native Linux filesystem run:\n'
-  printf '  sudo chown 10001:10001 %s\n' "${ROOT_DIR}/data"
+  # R48/V6: the token is kept in the Docker named volume twitch-mcp-data. No host folder is created.
+  printf 'The user token is kept in the Docker volume twitch-mcp-data. It is removed only by disconnect_twitch_account or: docker volume rm twitch-mcp-data\n'
 fi
 
 check_env

@@ -17,6 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "Dockerfile"
 COMPOSE = ROOT / "docker-compose.yml"
+OAUTH_COMPOSE = ROOT / "docker-compose.oauth.yml"
 
 
 @pytest.fixture(scope="module")
@@ -27,6 +28,56 @@ def dockerfile() -> str:
 @pytest.fixture(scope="module")
 def compose() -> str:
     return COMPOSE.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def oauth_compose() -> str:
+    return OAUTH_COMPOSE.read_text(encoding="utf-8")
+
+
+def _lines(text: str) -> list[str]:
+    """Non-blank, non-comment lines, with a trailing `` #...`` comment removed. Indentation is kept."""
+    out: list[str] = []
+    for raw in text.splitlines():
+        if not raw.strip() or raw.strip().startswith("#"):
+            continue
+        out.append(re.sub(r"\s+#.*$", "", raw.rstrip()))
+    return out
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _block(lines: list[str], header: str, indent: int) -> list[str]:
+    """The lines nested under the first ``header`` line sitting at ``indent`` (deeper lines only)."""
+    for i, line in enumerate(lines):
+        if line == " " * indent + header:
+            base = _indent(line)
+            nested: list[str] = []
+            for child in lines[i + 1 :]:
+                if _indent(child) <= base:
+                    break
+                nested.append(child)
+            return nested
+    return []
+
+
+def _top_keys(lines: list[str]) -> list[str]:
+    return [line[:-1] for line in lines if _indent(line) == 0 and line.endswith(":")]
+
+
+def _service_volumes(lines: list[str]) -> list[str]:
+    """Items directly under the twitch-mcp service's ``volumes:``; nested long-form fields are skipped."""
+    volumes = _block(_block(_block(lines, "services:", 0), "twitch-mcp:", 2), "volumes:", 4)
+    if not volumes:
+        return []
+    item_indent = _indent(volumes[0])
+    return [
+        line.strip()[2:]
+        for line in volumes
+        if _indent(line) == item_indent and line.strip().startswith("- ")
+    ]
 
 
 def test_the_container_runs_as_the_documented_unprivileged_uid(dockerfile: str) -> None:
@@ -78,8 +129,28 @@ def test_compose_applies_every_hardening_switch(compose: str) -> None:
 
 
 def test_compose_mounts_no_host_directory_by_default(compose: str) -> None:
-    """R48: the base compose file stores nothing. Only the opt-in oauth file may add ./data."""
-    service = compose.split("services:", 1)[-1]
-    assert "volumes:" not in service, (
-        "the default deployment must mount nothing; the token store lives in docker-compose.oauth.yml"
+    """R48: the base compose file declares no volumes and mounts nothing. Only the opt-in oauth file
+    adds the named volume that holds the token store."""
+    lines = _lines(compose)
+    assert "volumes" not in _top_keys(lines), "the base file declares no top-level volumes"
+    assert not any(re.match(r"\s*volumes:\s*\S", line) for line in lines), (
+        "a flow-style volumes value would hide a mount from the block parser"
     )
+    assert _service_volumes(lines) == [], "the default deployment must mount nothing"
+
+
+def test_oauth_override_declares_the_named_volume(oauth_compose: str) -> None:
+    """V1: the override declares the top-level named volume ``twitch-mcp-data`` with that exact name."""
+    lines = _lines(oauth_compose)
+    assert "volumes" in _top_keys(lines), "the override declares a top-level volumes key"
+    top_volumes = _block(lines, "volumes:", 0)
+    named = _block(top_volumes, "twitch-mcp-data:", 2)
+    assert "    name: twitch-mcp-data" in named, (
+        "the name is set directly under the twitch-mcp-data key, so it does not depend on the project name"
+    )
+
+
+def test_oauth_override_mounts_only_the_named_volume(oauth_compose: str) -> None:
+    """V1, V2: the service mounts exactly the named volume at /data. A host path, a ./ or / source, or a
+    long-form ``type: bind`` entry makes the list differ."""
+    assert _service_volumes(_lines(oauth_compose)) == ["twitch-mcp-data:/data"]

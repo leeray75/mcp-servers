@@ -2,7 +2,7 @@
 .env
 .env.*
 !.env.example
-# User OAuth token folder (docker-compose.oauth.yml mounts it; the token file is mode 0600)
+# legacy token folder (older versions); never commit
 data/
 # TLS material for the OAuth redirect (scripts/make-cert.sh writes it; docker-compose.tls.yml mounts
 # it read-only). Holds a private key - it must never be reachable from git.

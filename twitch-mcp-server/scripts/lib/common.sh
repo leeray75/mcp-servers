@@ -51,7 +51,8 @@ scheme() {
 }
 
 # Run docker compose against this project, wherever the script is invoked from. With user OAuth on
-# (R46/R48) the optional override is added: it mounts ./data for the token file and nothing else.
+# (R46/R48) the optional override is added: it mounts the named volume twitch-mcp-data at /data for
+# the token file and nothing else.
 # With TLS configured the second override is added: it mounts ./certs read-only and sets the two
 # container-side paths (T11). Both are opt-in, so the default deployment mounts nothing at all.
 compose() {

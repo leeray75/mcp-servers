@@ -40,8 +40,8 @@ COPY --from=builder /opt/venv /opt/venv
 # Pure Python, run from source: no build backend (and so no unhashed build-time download).
 COPY src /app/src
 
-# R2/R48: the user-OAuth token folder. Owned by the runtime user; only the compose override mounts a
-# host folder here (docker-compose.oauth.yml). Harmless when unmounted.
+# R2/R48: the user-OAuth token folder. Owned by the runtime user. Only the compose override mounts a
+# named volume here (docker-compose.oauth.yml); a new named volume copies this owner. Harmless when unmounted.
 RUN mkdir -p /data && chown 10001:10001 /data
 
 USER 10001:10001

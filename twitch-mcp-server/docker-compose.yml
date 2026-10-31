@@ -4,8 +4,8 @@
 # is read-only, all Linux capabilities are dropped, and the container runs as UID 10001. The only
 # outbound traffic it needs is HTTPS to Twitch's API hosts (api.twitch.tv and id.twitch.tv). It
 # stores nothing on disk and mounts no host folders unless user OAuth is enabled, in which case
-# docker-compose.oauth.yml adds exactly one mount (./data), or TLS is configured, in which case
-# docker-compose.tls.yml adds exactly one read-only mount (./certs). Do not change the port mapping
+# docker-compose.oauth.yml adds exactly one named volume (twitch-mcp-data at /data), or TLS is
+# configured, in which case docker-compose.tls.yml adds exactly one read-only mount (./certs). Do not change the port mapping
 # to 0.0.0.0.
 
 x-hardening: &hardening

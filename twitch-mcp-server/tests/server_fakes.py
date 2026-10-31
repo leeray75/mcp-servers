@@ -68,8 +68,6 @@ VALIDATE_USER = {
     "client_id": FAKE_CLIENT_ID,
     "login": "operator",
     "user_id": OPERATOR,
-    "user_login": "operator",
-    "user_type": "",
     "scopes": ["user:read:email", "moderator:read:chatters"],
     "expires_in": 15000,
 }

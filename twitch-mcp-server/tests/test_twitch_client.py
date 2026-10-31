@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -316,18 +317,174 @@ async def test_the_app_token_mint_goes_out_without_credential_headers(
     assert "client_id=" in sent and "client_secret=" in sent, "credentials travel in the form body"
 
 
-async def test_only_the_token_endpoint_may_go_without_credentials(
+REVOKE = "/oauth2/revoke"
+TOKEN = "/oauth2/token"
+CLIENT = "fake-client-id-0123456789abcdef"
+SECRET = "fake-client-secret"
+
+
+async def test_revoke_sends_client_id_and_no_headers(
     fake: FakeTwitch, fclock: Any, settings: Settings
 ) -> None:
-    """R13: the mint exception is keyed on that one path — its sibling OAuth call still needs both."""
+    """W6 (R13 exception): revoke carries client id and token in the form, and no header."""
+    fake.add("POST", r"^/oauth2/revoke$", fake.json({}, status=200))
+    client = make_client(fake, fclock, settings)
+
+    await client.post_form(REVOKE, {"client_id": CLIENT, "token": APP_TOKEN})
+
+    assert len(fake.requests) == 1
+    request = fake.requests[0]
+    assert request.headers.get("client-id") is None
+    assert request.headers.get("authorization") is None
+    sent = parse_qs(request.content.decode())
+    assert sent == {"client_id": [CLIENT], "token": [APP_TOKEN]}
+
+
+async def test_revoke_without_client_id_is_refused_before_the_socket(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """W6: a revoke form with no client id is refused with zero requests recorded."""
     fake.add("POST", r"^/oauth2/revoke$", fake.json({}))
     client = make_client(fake, fclock, settings)
 
     with pytest.raises(TwitchMcpError) as exc:
-        await client.post_form("/oauth2/revoke", {"token": APP_TOKEN})
+        await client.post_form(REVOKE, {"token": APP_TOKEN})
 
     assert exc.value.kind == "unauthenticated"
     assert fake.requests == [], "refused before the socket"
+
+
+@pytest.mark.parametrize(
+    "keywords",
+    [
+        {"client_id": CLIENT},
+        {"bearer": APP_TOKEN},
+        {"client_id": CLIENT, "bearer": APP_TOKEN},
+    ],
+    ids=["client_id_only", "bearer_only", "both"],
+)
+async def test_revoke_with_any_keyword_is_refused_before_the_socket(
+    fake: FakeTwitch, fclock: Any, settings: Settings, keywords: dict[str, str]
+) -> None:
+    """R2-1 (W6): revoke never carries Client-Id or Authorization, so any keyword is refused."""
+    fake.add("POST", r"^/oauth2/revoke$", fake.json({}))
+    client = make_client(fake, fclock, settings)
+
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.post_form(REVOKE, {"client_id": CLIENT, "token": APP_TOKEN}, **keywords)
+
+    assert exc.value.kind == "unauthenticated"
+    assert fake.requests == [], "refused before the socket"
+
+
+async def test_token_endpoint_without_keywords_sends_no_headers(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """R13: only the token path may go without credential headers, and only with no keyword."""
+    fake.add("POST", r"^/oauth2/token$", fake.json({"access_token": APP_TOKEN}))
+    client = make_client(fake, fclock, settings)
+
+    await client.post_form(TOKEN, {"client_id": CLIENT, "client_secret": SECRET})
+
+    assert fake.requests[0].headers.get("authorization") is None
+
+
+async def test_token_endpoint_with_a_keyword_needs_both_headers(
+    fake: FakeTwitch, fclock: Any, settings: Settings
+) -> None:
+    """R13: passing a keyword on the token path ends the header exception, so both are required."""
+    client = make_client(fake, fclock, settings)
+
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.post_form(TOKEN, {"client_id": CLIENT}, client_id=CLIENT)
+
+    assert exc.value.kind == "unauthenticated"
+    assert fake.requests == [], "refused before the socket (no bearer)"
+
+
+@pytest.mark.parametrize(
+    ("grant", "answer", "status", "kind", "hint_has"),
+    [
+        # W4: a revoke 400 (message only, a dead token) is unauthenticated, with no sign-in hint.
+        ("revoke", {"status": 400, "message": "Invalid token"}, 400, "unauthenticated", None),
+        # W4/W12: a token 400 with the documented "Bad Request" body is unauthenticated, sign-in hint.
+        (
+            "authorization_code",
+            {"error": "Bad Request", "status": 400, "message": "Invalid code"},
+            400,
+            "unauthenticated",
+            "connect_twitch_account",
+        ),
+        # W12: a client_credentials mint 400 points at the env values.
+        (
+            "client_credentials",
+            {"status": 400, "message": "Invalid client secret"},
+            400,
+            "unauthenticated",
+            "TWITCH_CLIENT_SECRET",
+        ),
+        # W4: a 404 on revoke is a configuration fault, not a dead token.
+        ("revoke_404", {"status": 404, "message": "client does not exist"}, 404, "upstream", None),
+        # 401 keeps its existing mapping.
+        (
+            "client_credentials_401",
+            {"status": 401, "message": "Unauthorized"},
+            401,
+            "unauthenticated",
+            "TWITCH_CLIENT_SECRET",
+        ),
+        # W4: a 503 is upstream and retryable.
+        ("revoke_503", {"status": 503, "message": "Unavailable"}, 503, "upstream", None),
+    ],
+    ids=[
+        "revoke_400",
+        "token_400_bad_request",
+        "mint_400",
+        "revoke_404",
+        "mint_401",
+        "revoke_503",
+    ],
+)
+async def test_oauth_status_mapping_and_hints(
+    fake: FakeTwitch,
+    fclock: Any,
+    settings: Settings,
+    grant: str,
+    answer: dict[str, Any],
+    status: int,
+    kind: str,
+    hint_has: str | None,
+) -> None:
+    """W4 and W12: the 400 mapping is by status, the hint is chosen by path and grant."""
+    path, form = _case_request(grant)
+    fake.add("POST", rf"^{path}$", fake.json(answer, status=status))
+    client = make_client(fake, fclock, settings)
+
+    with pytest.raises(TwitchMcpError) as exc:
+        await client.post_form(path, form)
+
+    assert exc.value.kind == kind
+    assert exc.value.http_status == status
+    assert len(fake.requests) == 1, "OAuth calls are never retried (R16)"
+    if hint_has is None:
+        assert exc.value.hint is None or "connect_twitch_account" not in exc.value.hint
+    else:
+        assert exc.value.hint is not None and hint_has in exc.value.hint
+    if status >= 500:
+        assert exc.value.retryable is True
+
+
+def _case_request(grant: str) -> tuple[str, dict[str, str]]:
+    """The path and form each status-mapping case sends, by its grant label."""
+    if grant.startswith("revoke"):
+        return REVOKE, {"client_id": CLIENT, "token": APP_TOKEN}
+    if grant == "client_credentials" or grant == "client_credentials_401":
+        return TOKEN, {
+            "client_id": CLIENT,
+            "client_secret": SECRET,
+            "grant_type": "client_credentials",
+        }
+    return TOKEN, {"client_id": CLIENT, "client_secret": SECRET, "grant_type": grant, "code": "c"}
 
 
 async def test_a_helix_call_missing_only_the_client_id_is_refused_before_the_socket(
