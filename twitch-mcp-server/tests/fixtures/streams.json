@@ -1,0 +1,35 @@
+{
+  "data": [
+    {
+      "id": "20001",
+      "user_id": "123456789",
+      "user_login": "operator_login",
+      "user_name": "OperatorLogin",
+      "game_id": "509658",
+      "game_name": "Just Chatting",
+      "type": "live",
+      "title": "Live now!",
+      "viewer_count": 1234,
+      "started_at": "2026-10-29T00:00:00Z",
+      "language": "en",
+      "is_mature": false,
+      "tags": ["English", "Test"]
+    },
+    {
+      "id": "20002",
+      "user_id": "987654321",
+      "user_login": "another_user",
+      "user_name": "AnotherUser",
+      "game_id": "",
+      "game_name": "",
+      "type": "live",
+      "title": null,
+      "viewer_count": 0,
+      "started_at": "2026-10-29T00:00:00Z",
+      "language": "",
+      "is_mature": false,
+      "tags": null
+    }
+  ],
+  "pagination": {"cursor": ""}
+}

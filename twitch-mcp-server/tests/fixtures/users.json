@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "id": "123456789",
+      "login": "operator_login",
+      "display_name": " OperatorLogin ",
+      "user_type": "",
+      "broadcaster_type": "affiliate",
+      "description": "Synthetic operator profile for tests.",
+      "profile_image_url": "https://static-cdn.jtvnw.net/preload-tile.png",
+      "offline_image_url": "https://static-cdn.jtvnw.net/preload-tile.png",
+      "view_count": 4242,
+      "email": "operator@example.com",
+      "created_at": "2018-01-01T00:00:00Z"
+    },
+    {
+      "id": "987654321",
+      "login": "another_user",
+      "display_name": "AnotherUser",
+      "user_type": "",
+      "broadcaster_type": "",
+      "description": "",
+      "profile_image_url": "https://static-cdn.jtvnw.net/preload-tile.png",
+      "offline_image_url": "",
+      "view_count": 0,
+      "created_at": "2020-06-15T10:30:00Z"
+    }
+  ],
+  "pagination": {}
+}

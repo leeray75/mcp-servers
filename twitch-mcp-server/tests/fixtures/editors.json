@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "user_id": "555555555",
+      "user_login": "operator_login",
+      "user_name": "OperatorLogin",
+      "created_at": "2024-03-01T00:00:00Z"
+    }
+  ],
+  "pagination": {}
+}

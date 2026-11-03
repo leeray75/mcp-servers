@@ -1,0 +1,20 @@
+# Optional override for user identity (TWITCH_USER_OAUTH, R46-R48). Applied only when
+# TWITCH_USER_OAUTH is true in .env: scripts/lib/common.sh then adds
+# "-f docker-compose.yml -f docker-compose.oauth.yml" to every compose call. Without it,
+# docker-compose.yml is used unchanged and mounts no host folders.
+#
+# It adds exactly one volume, the Docker-managed named volume twitch-mcp-data mounted at /data, for
+# the user's token file (mode 0600). The volume lives in the Docker data root, not in the repository
+# tree, so the token is not on the Windows-visible drive. Nothing is mounted from the host. The root
+# filesystem stays read-only; /data is the only writable path besides the tmpfs /tmp.
+
+services:
+  twitch-mcp:
+    environment:
+      TWITCH_OAUTH_TOKEN_FILE: /data/twitch_user_token.json
+    volumes:
+      - twitch-mcp-data:/data
+
+volumes:
+  twitch-mcp-data:
+    name: twitch-mcp-data
