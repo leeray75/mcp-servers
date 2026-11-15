@@ -16,7 +16,8 @@ def auth_guide(host_port: int) -> str:
 
 Use this when a Gmail tool answers AUTH_REQUIRED, or `auth_status` shows `signed_in` as false.
 
-1. Call `auth_status`. Read `state`, `ready_to_retry`, `checked_at`, `warnings` and `next_step`.
+1. Call `auth_status`. Read `state`, `ready_to_retry`, `network`, `checked_at`, `warnings`
+   and `next_step`.
 2. Hand the sign-in to the user. Who opens the page:
    - If the client offers URL elicitation, it may open the page for the user.
    - Otherwise run the command for the user's operating system from `open_commands` in a
@@ -25,13 +26,20 @@ Use this when a Gmail tool answers AUTH_REQUIRED, or `auth_status` shows `signed
      into their own browser.
 3. Ask the user to approve access in that browser. The page then says "Gmail is connected".
 4. Call `auth_status` again. Retry the failing tool only when `ready_to_retry` is true
-   (it is true exactly when `state` is `signed_in`).
+   (it is true exactly when `state` is `signed_in` and `network` is `ok`).
 
 The states you may see:
 - `sign_in_in_progress`: a sign-in page was opened and has not finished. Wait for the user to
   finish approving access, then call `auth_status`. `ready_to_retry` is false until then.
 - `not_signed_in`, `token_unreadable`, `scopes_insufficient`, `rejected`: follow steps 2 to 4.
-- `signed_in`: no action needed; `ready_to_retry` is true.
+- `signed_in`: no action needed; `ready_to_retry` is true unless `network` is `dns_failure`.
+
+The network value (`network`):
+- `ok`: Google hostnames resolve from the server.
+- `dns_failure`: the server cannot resolve Google hostnames. This may be temporary.
+  Do not retry in a loop. Ask the user to run `scripts/restart.sh` (or `.ps1`), with logs in
+  `scripts/logs.sh` (or `.ps1`), then call `auth_status` again. `ready_to_retry` stays false
+  until it is `ok`.
 
 `checked_at` is the UTC time the status was computed. Every call and every read of
 `gmail://auth/status` recomputes it, so use it to judge how fresh a result is.

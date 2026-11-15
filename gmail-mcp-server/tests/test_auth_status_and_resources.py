@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -12,11 +17,14 @@ from mcp import Client
 from mcp.shared.exceptions import MCPError
 from starlette.applications import Starlette
 
+from gmail_mcp import netcheck
+from gmail_mcp import server as server_module
 from gmail_mcp.auth import write_token
 from gmail_mcp.auth_state import compute_auth_status
 from gmail_mcp.config import SCOPE_COMPOSE, SCOPE_READONLY, Settings
 from gmail_mcp.errors import auth_url
 from gmail_mcp.gmail_client import GmailClient
+from gmail_mcp.netcheck import PROBE_HOSTS, DnsResult
 from gmail_mcp.server import create_app, create_server
 from gmail_mcp.signin import PendingStore, SignInService
 from tests.conftest import FAKE_REFRESH_TOKEN, FakeGmail
@@ -293,3 +301,132 @@ async def test_pending_attempt_does_not_hide_a_signed_in_token(settings: Setting
         result = await client.call_tool("auth_status", {})
     assert result.structured_content["state"] == "signed_in"
     assert result.structured_content["ready_to_retry"] is True
+
+
+# ------------------------------------- network-failure-diagnostics R4, R5: the DNS probe in status
+
+
+def _probe_result(ok: bool) -> Callable[..., DnsResult]:
+    def probe(*_args: Any, **_kwargs: Any) -> DnsResult:
+        return DnsResult(ok=ok, hosts=())
+
+    return probe
+
+
+async def test_tool_reports_dns_failure_without_raising(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("gmail_mcp.server.resolve_hosts", _probe_result(False))
+    _token(settings, [SCOPE_READONLY, SCOPE_COMPOSE])
+    async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
+        result = await client.call_tool("auth_status", {})
+    assert result.is_error is False
+    body = result.structured_content
+    assert body["network"] == "dns_failure"
+    assert body["signed_in"] is True
+    assert body["ready_to_retry"] is False
+    assert body["next_step"].startswith("Google hostnames could not be resolved")
+    assert "scripts/restart." in body["next_step"]
+    assert any("could not be resolved" in w for w in body["warnings"])
+
+
+async def test_tool_and_resource_agree_on_the_network_result(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("gmail_mcp.server.resolve_hosts", _probe_result(False))
+    _token(settings, [SCOPE_READONLY, SCOPE_COMPOSE])
+    async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
+        tool = await client.call_tool("auth_status", {})
+        resource = await client.read_resource("gmail://auth/status")
+    body = json.loads(resource.contents[0].text)  # type: ignore[union-attr]
+    assert tool.structured_content["network"] == body["network"] == "dns_failure"
+    assert tool.structured_content["ready_to_retry"] is body["ready_to_retry"] is False
+
+
+async def test_healthy_probe_reports_ok_and_keeps_the_payload(settings: Settings) -> None:
+    _token(settings, [SCOPE_READONLY, SCOPE_COMPOSE])
+    async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
+        result = await client.call_tool("auth_status", {})
+    assert result.structured_content["network"] == "ok"
+    assert result.structured_content["ready_to_retry"] is True
+    assert result.structured_content["next_step"] == "No action needed."
+
+
+def test_probe_uses_the_two_google_hosts_and_a_two_second_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[tuple[str, ...], float]] = []
+
+    def record(hosts: Any = (), timeout: float = 0.0) -> DnsResult:
+        seen.append((tuple(hosts), timeout))
+        return DnsResult(ok=True, hosts=())
+
+    monkeypatch.setattr("gmail_mcp.server.resolve_hosts", record)
+    assert server_module.probe_network() == "ok"
+    assert seen == [(PROBE_HOSTS, 2.0)]
+
+
+def test_probe_is_dns_failure_when_the_probe_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*_args: Any, **_kwargs: Any) -> DnsResult:
+        raise RuntimeError("resolver exploded")
+
+    monkeypatch.setattr("gmail_mcp.server.resolve_hosts", broken)
+    assert server_module.probe_network() == "dns_failure"
+
+
+def test_hanging_resolver_is_dns_failure_within_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+
+    def hang(host: str, port: Any, **_kwargs: Any) -> list[Any]:
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr("gmail_mcp.server.resolve_hosts", netcheck.resolve_hosts)
+    monkeypatch.setattr(server_module, "DNS_PROBE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(socket, "getaddrinfo", hang)
+    try:
+        started = time.monotonic()
+        verdict = server_module.probe_network()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert verdict == "dns_failure"
+    assert elapsed < 1.5
+
+
+def test_resolvable_hosts_probe_as_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    def resolves(host: str, port: Any, **_kwargs: Any) -> list[Any]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 443))]
+
+    monkeypatch.setattr("gmail_mcp.server.resolve_hosts", netcheck.resolve_hosts)
+    monkeypatch.setattr(socket, "getaddrinfo", resolves)
+    assert server_module.probe_network() == "ok"
+
+
+async def test_auth_status_description_states_the_retry_and_restart_rules(
+    settings: Settings,
+) -> None:
+    async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
+        tool = next(t for t in (await client.list_tools()).tools if t.name == "auth_status")
+    description = tool.description or ""
+    assert "ready_to_retry is true" in description
+    assert "network is dns_failure" in description
+    assert "restart" in description
+    assert tool.output_schema is not None
+    assert "network" in tool.output_schema["properties"]
+
+
+async def test_auth_guide_explains_dns_failure(settings: Settings) -> None:
+    async with Client(create_server(settings, _as_client(FakeGmail()))) as client:
+        guide = (await client.read_resource("gmail://guide/auth")).contents[0].text  # type: ignore[union-attr]
+    for phrase in (
+        "network",
+        "dns_failure",
+        "scripts/restart.sh",
+        "scripts/logs.sh",
+        "Do not retry in a loop",
+        "exactly when `state` is `signed_in` and `network` is `ok`",
+    ):
+        assert phrase in guide

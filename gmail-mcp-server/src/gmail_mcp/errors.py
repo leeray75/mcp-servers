@@ -53,6 +53,20 @@ class AuthRequiredError(GmailMcpError):
         return auth_required_message(self.reason, host_port)
 
 
+NETWORK_UNREACHABLE_MESSAGE: Final = (
+    "NETWORK_UNREACHABLE: DNS resolution failed in the server container, so Google could not be "
+    "reached. This may be temporary. Do not retry in a loop. Call auth_status: if it reports "
+    "network: dns_failure, ask the user to run scripts/restart.* (logs: scripts/logs.*)."
+)
+
+
+class NetworkUnreachableError(GmailMcpError):
+    """Name resolution for the Google hosts failed inside the server container (D6, D7)."""
+
+    def __init__(self) -> None:
+        super().__init__(NETWORK_UNREACHABLE_MESSAGE)
+
+
 class GmailApiError(GmailMcpError):
     """A Gmail API call failed. Carries a concise, content-free description."""
 

@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Container DNS: compose sets `dns:` on both services from `CONTAINER_DNS_1` (default `8.8.8.8`)
+  and `CONTAINER_DNS_2` (default `1.1.1.1`), documented in `.env.example` and the README.
+- `gmail_mcp.netcheck` (DNS probe for the two Google hosts, stdlib plus httplib2 for error types, bounded by a wall-clock
+  timeout, never raises or returns addresses) and `gmail_mcp.healthcheck`
+  (`python -m gmail_mcp.healthcheck`).
+- Network triage section in the README.
+- `NETWORK_UNREACHABLE` tool error: a Gmail call that fails because the Google hostnames do not
+  resolve in the server container now says so (do not retry in a loop, call `auth_status`, restart
+  if it reports `network: dns_failure`) instead of "try again shortly". `netcheck.is_dns_failure`
+  checks the exception cause chain.
+- `auth_status` field `network` (`ok` or `dns_failure`), from a bounded (2 s) DNS probe of the two
+  Google hostnames, also in `gmail://auth/status`. `dns_failure` adds a restart instruction to
+  `next_step` and a warning.
+
+### Changed
+
+- The container healthcheck (Dockerfile `HEALTHCHECK` and compose `healthcheck.test`) runs
+  `python -m gmail_mcp.healthcheck` and now also requires DNS resolution of the Google hosts, so
+  `unhealthy` reflects a dead resolver. It is a label only; the container is not restarted.
+- `auth_status` and `gmail://auth/status` now resolve the Google hostnames (DNS only; no request is
+  sent to Google). This amends the earlier "pure, no network" statement; `compute_auth_status`
+  itself stays pure and receives the probe result.
+- `ready_to_retry` is true only when `state` is `signed_in` and `network` is `ok`. The guide
+  resource and the `auth_status` description say to retry only on `ready_to_retry: true`.
+
 ## [0.2.0] - 2026-10-25
 
 ### Added

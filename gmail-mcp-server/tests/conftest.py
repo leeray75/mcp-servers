@@ -38,6 +38,17 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _stub_dns_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """auth_status probes DNS; stub it so no test resolves a real host. Tests may override."""
+    from gmail_mcp.netcheck import DnsResult
+
+    def healthy(*_args: Any, **_kwargs: Any) -> DnsResult:
+        return DnsResult(ok=True, hosts=())
+
+    monkeypatch.setattr("gmail_mcp.server.resolve_hosts", healthy)
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(

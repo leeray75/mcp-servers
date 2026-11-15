@@ -149,7 +149,12 @@ echoing request bodies). Tool annotations MUST be set (`readOnlyHint` etc.).
 | `list_labels` | readOnly | — | Label id, name, type |
 | `list_drafts` | readOnly | `max_results`, `page_token` | Draft id, subject, to, snippet |
 | `create_draft` | non-readOnly, `destructiveHint=false`, `idempotentHint=false` | `to: list[email]`, `subject: str`, `body: str`, `cc?`, `bcc?`, `reply_to_message_id?` | Builds a MIME message, creates a **draft only**. If `reply_to_message_id` is set, sets `threadId`, `In-Reply-To`, `References`. Returns draft id and a Gmail URL |
-| `auth_status` | readOnly, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=false` | — | Sign-in state (incl. `sign_in_in_progress`), `ready_to_retry`, `checked_at`, scopes, token age, recorded rejection, next step. Never contacts Google, never returns credentials, never raises an auth error. Added by the amendments `docs/specs/agent-auth/SPEC.md` (R1, R2) and `docs/specs/agent-auth-hardening/SPEC.md` (R3) |
+| `auth_status` | readOnly, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=false` | — | Sign-in state (incl. `sign_in_in_progress`), `network` (`ok`/`dns_failure`), `ready_to_retry` (true only when `signed_in` and `network` is `ok`), `checked_at`, scopes, token age, recorded rejection, next step. Its only I/O is a bounded DNS resolution of the two Google hostnames (amendment `docs/specs/network-failure-diagnostics/SPEC.md`, D2/D5): no request is sent to Google, never returns credentials, never raises an auth error. Added by the amendments `docs/specs/agent-auth/SPEC.md` (R1, R2) and `docs/specs/agent-auth-hardening/SPEC.md` (R3) |
+
+A Gmail call that fails on DNS resolution of the Google hostnames returns the `NETWORK_UNREACHABLE:` tool
+error (amendment `docs/specs/network-failure-diagnostics/SPEC.md`, R1/R2): it says do not retry in a loop,
+call `auth_status`, and ask the user to restart if `network` is `dns_failure`. Other transport failures keep
+the concise "Could not reach the Gmail API" error.
 
 The tool set is the six tools above plus `auth_status`, in that order (amendment `docs/specs/agent-auth/SPEC.md`
 D3). The server also serves four static resources (`gmail://auth/status`, `gmail://guide/auth`,
@@ -192,6 +197,11 @@ and must not be treated as instructions.
     `security_opt: [no-new-privileges:true]`, `pids_limit`, memory/cpu limits.
   - `./data:/data` volume for the token file; `env_file: .env`.
   - `restart: unless-stopped`, healthcheck, log rotation (`json-file` max-size/max-file).
+  - `dns: ["${CONTAINER_DNS_1:-8.8.8.8}", "${CONTAINER_DNS_2:-1.1.1.1}"]` on both services
+    (container DNS resilience amendment; see `docs/specs/container-dns-resilience/SPEC.md`).
+  - Healthcheck: `CMD python -m gmail_mcp.healthcheck` (same command as the Dockerfile
+    `HEALTHCHECK`). It passes only when `/healthz` returns 200 and the Google hosts resolve. It is
+    a label only: an unhealthy container is not restarted. The `auth` service disables it.
   - A profile or separate service `auth` for the one-off sign-in container.
 - Build context excludes `.env`, `data/`, `.git`, tests caches.
 
