@@ -23,7 +23,14 @@ from googleapiclient.errors import HttpError
 
 from gmail_mcp.auth import load_credentials
 from gmail_mcp.config import Settings
-from gmail_mcp.errors import REJECTED_REASON, AuthRequiredError, GmailApiError, GmailMcpError
+from gmail_mcp.errors import (
+    REJECTED_REASON,
+    AuthRequiredError,
+    GmailApiError,
+    GmailMcpError,
+    NetworkUnreachableError,
+)
+from gmail_mcp.netcheck import is_dns_failure
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +141,12 @@ class GmailClient:
                     self._record_rejection()
                 raise mapped from None
             except (GoogleAuthError, httplib2.HttpLib2Error, OSError, TimeoutError) as exc:
+                if is_dns_failure(exc):
+                    logger.warning(
+                        "gmail dns failure",
+                        extra={"outcome": "dns_failure", "cause": type(exc).__name__},
+                    )
+                    raise NetworkUnreachableError() from None
                 logger.warning("gmail transport failure", extra={"outcome": type(exc).__name__})
                 raise GmailApiError("Could not reach the Gmail API; try again shortly.") from None
 

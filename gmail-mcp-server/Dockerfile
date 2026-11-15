@@ -50,10 +50,10 @@ WORKDIR /app
 VOLUME ["/data"]
 EXPOSE 8000
 
-# No curl in the image: probe with the interpreter. Host is 127.0.0.1:<port>,
-# which the Host-header guard allows. Signals/zombie reaping: run with `init: true`
-# (compose does) so tini is PID 1.
+# No curl in the image: the healthcheck module probes /healthz on 127.0.0.1:$PORT (allowed by the
+# Host-header guard) and checks DNS for the Google hosts. Same command as compose's healthcheck.
+# Signals/zombie reaping: run with `init: true` (compose does) so tini is PID 1.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
-    CMD ["python", "-c", "import os,sys,urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('PORT','8000'), timeout=3).status == 200 else 1)"]
+    CMD ["python", "-m", "gmail_mcp.healthcheck"]
 
 CMD ["python", "-m", "gmail_mcp"]

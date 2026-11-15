@@ -31,7 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from gmail_mcp import __version__, tools
-from gmail_mcp.auth_state import AuthStatus, compute_auth_status
+from gmail_mcp.auth_state import AuthStatus, NetworkState, compute_auth_status
 from gmail_mcp.config import Settings
 from gmail_mcp.errors import AuthRequiredError, GmailMcpError, auth_url
 from gmail_mcp.gmail_client import GmailClient, build_service
@@ -51,6 +51,7 @@ from gmail_mcp.models import (
     Subject,
     ThreadContent,
 )
+from gmail_mcp.netcheck import PROBE_HOSTS, resolve_hosts
 from gmail_mcp.resources import auth_guide, limits_guide, search_guide
 from gmail_mcp.security import HEALTH_PATH, BearerAuthMiddleware, HostGuardMiddleware
 from gmail_mcp.signin import PendingStore, SignInService
@@ -90,13 +91,15 @@ _DESC_GET_MESSAGE: Final = (
 )
 _DESC_AUTH_STATUS: Final = (
     "Report whether Gmail sign-in is in place, the granted and missing scopes, the token age, "
-    "any recent rejection and the exact next step. Read-only: it never contacts Gmail or "
-    "Google, never returns credentials, and is safe to call when not signed in."
+    "any recent rejection, DNS health (network) and the exact next step. Read-only: it only "
+    "resolves Google hostnames, never sends requests to Google, never returns credentials, and "
+    "is safe to call when not signed in. Retry the failing tool only when ready_to_retry is true; "
+    "if network is dns_failure, ask the user to restart the server instead of looping."
 )
 
 _DESC_RES_AUTH_STATUS: Final = (
     "Current Gmail sign-in state as JSON (the auth_status payload), including ready_to_retry, "
-    "checked_at and any sign-in in progress."
+    "network, checked_at and any sign-in in progress."
 )
 _DESC_RES_AUTH_GUIDE: Final = (
     "Ordered sign-in procedure for agents: who opens the sign-in page, what never to do on it, "
@@ -122,6 +125,21 @@ AUTH_STATUS: Final = ToolAnnotations(
 
 P = ParamSpec("P")
 R = TypeVar("R")
+DNS_PROBE_TIMEOUT_S: Final = 2.0
+
+
+def probe_network() -> NetworkState:
+    """Bounded DNS check of the Google hosts (D5). Never raises; a timeout is ``dns_failure``."""
+    try:
+        result = resolve_hosts(PROBE_HOSTS, timeout=DNS_PROBE_TIMEOUT_S)
+    except Exception:  # defensive: resolve_hosts never raises, but auth_status must not fail
+        return "dns_failure"
+    return "ok" if result.ok else "dns_failure"
+
+
+def _auth_status_now(settings: Settings, gmail: GmailClient, store: PendingStore) -> AuthStatus:
+    """The auth_status payload, computed fresh with a DNS probe, for the tool and the resource."""
+    return compute_auth_status(settings, gmail.rejected_at, store.has_pending(), probe_network())
 
 
 def _sign_in_response(
@@ -206,9 +224,7 @@ def _register_resources(
         annotations=Annotations(audience=["user", "assistant"], priority=0.9),
     )
     def auth_status_resource() -> str:
-        return compute_auth_status(
-            settings, gmail.rejected_at, pending.has_pending()
-        ).model_dump_json()
+        return _auth_status_now(settings, gmail, pending).model_dump_json()
 
     @server.resource(
         "gmail://guide/auth",
@@ -361,9 +377,7 @@ def create_server(
     @_instrumented("auth_status", settings)
     async def auth_status() -> AuthStatus:
         """Gmail sign-in state, granted and missing scopes, token age and the next step."""
-        status = await asyncio.to_thread(
-            compute_auth_status, settings, gmail.rejected_at, store.has_pending()
-        )
+        status = await asyncio.to_thread(_auth_status_now, settings, gmail, store)
         # R2.3 (A1, D8): the text block is the full JSON of the same payload as structuredContent.
         # The SDK validates structured content against the AuthStatus output schema.
         return cast(

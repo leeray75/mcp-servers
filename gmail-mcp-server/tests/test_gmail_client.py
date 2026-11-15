@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import errno
+import logging
+import socket
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -10,7 +13,7 @@ from googleapiclient.errors import HttpError
 
 from gmail_mcp.auth import write_token
 from gmail_mcp.config import SCOPE_COMPOSE, SCOPE_READONLY, Settings
-from gmail_mcp.errors import AuthRequiredError, GmailApiError
+from gmail_mcp.errors import AuthRequiredError, GmailApiError, NetworkUnreachableError
 from gmail_mcp.gmail_client import GmailClient, build_service, map_http_error
 from tests.conftest import FAKE_REFRESH_TOKEN
 
@@ -126,15 +129,76 @@ async def test_token_added_later_is_picked_up_without_restart(settings: Settings
     "exc",
     [
         TimeoutError("slow"),
-        OSError("reset"),
-        httplib2.ServerNotFoundError("dns"),
+        OSError(errno.ECONNRESET, "reset"),
+        httplib2.HttpLib2Error("generic"),
         TransportError("x"),
     ],
 )
 async def test_transport_failures_are_concise(exc: Exception) -> None:
     client = GmailClient(lambda: service_with_execute(_raise(exc)))
-    with pytest.raises(GmailApiError, match="Could not reach"):
+    with pytest.raises(GmailApiError, match="Could not reach") as info:
         await client.list_labels()
+    assert not isinstance(info.value, NetworkUnreachableError)
+
+
+def _transport_error_like_google_auth_httplib2() -> TransportError:
+    """Mirror google_auth_httplib2: ``raise TransportError(exc)`` inside the ``except`` block."""
+    try:
+        try:
+            raise httplib2.ServerNotFoundError("Unable to find the server at a.example")
+        except httplib2.HttpLib2Error as exc:
+            raise TransportError(exc)  # noqa: B904 - the library's exact shape (no ``from``)
+    except TransportError as wrapped:
+        return wrapped
+
+
+def _transport_error_with_gaierror_cause() -> TransportError:
+    wrapped = TransportError("wrapped")
+    wrapped.__cause__ = socket.gaierror(-2, "Name or service not known")
+    return wrapped
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httplib2.ServerNotFoundError("Unable to find the server at a.example"),
+        _transport_error_like_google_auth_httplib2(),
+        _transport_error_with_gaierror_cause(),
+        socket.gaierror(-2, "Name or service not known"),
+    ],
+    ids=["server-not-found", "transport-wraps-httplib2-via-context", "transport-cause", "gaierror"],
+)
+async def test_dns_failures_raise_network_unreachable(
+    exc: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = GmailClient(lambda: service_with_execute(_raise(exc)))
+    with (
+        caplog.at_level(logging.WARNING, logger="gmail_mcp.gmail_client"),
+        pytest.raises(NetworkUnreachableError) as info,
+    ):
+        await client.list_labels()
+    assert info.value.__suppress_context__ is True  # raised ``from None``
+    dns_records = [r for r in caplog.records if r.getMessage() == "gmail dns failure"]
+    assert len(dns_records) == 1
+    assert dns_records[0].outcome == "dns_failure"  # type: ignore[attr-defined]
+    assert dns_records[0].cause == type(exc).__name__  # type: ignore[attr-defined]
+
+
+async def test_dns_failure_leaves_the_client_usable_and_no_rejection_recorded() -> None:
+    client = GmailClient(lambda: service_with_execute(_raise(socket.gaierror(-2, "x"))))
+    with pytest.raises(NetworkUnreachableError):
+        await client.list_labels()
+    assert client.rejected_at is None
+
+
+async def test_dns_failure_logs_no_host_or_query(caplog: pytest.LogCaptureFixture) -> None:
+    exc = httplib2.ServerNotFoundError("Unable to find the server at gmail.googleapis.com")
+    client = GmailClient(lambda: service_with_execute(_raise(exc)))
+    with caplog.at_level(logging.DEBUG), pytest.raises(NetworkUnreachableError):
+        await client.list_labels()
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "gmail.googleapis.com" not in logged
+    assert "gmail dns failure" in logged
 
 
 async def test_unexpected_exceptions_propagate_unchanged() -> None:

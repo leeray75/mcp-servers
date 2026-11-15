@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from gmail_mcp.errors import REJECTED_REASON, AuthRequiredError, auth_url
+from gmail_mcp.errors import REJECTED_REASON, AuthRequiredError, NetworkUnreachableError, auth_url
 
 CAUSES = [
     ("No Google token found.", "no token"),
@@ -62,3 +62,28 @@ def test_default_reason_still_yields_the_contract_text() -> None:
     text = AuthRequiredError().user_message()
     assert text.startswith("AUTH_REQUIRED: ")
     assert len(text) <= 700
+
+
+# --- network-failure-diagnostics R2: the NETWORK_UNREACHABLE text -------------------------------
+
+
+def test_network_unreachable_text_follows_the_contract() -> None:
+    text = NetworkUnreachableError().user_message()
+    assert text.startswith("NETWORK_UNREACHABLE:")
+    assert len(text) <= 500
+    assert "DNS resolution failed in the server container" in text
+    assert "Do not retry in a loop" in text
+    assert "Call auth_status" in text
+    assert "network: dns_failure" in text
+    assert "scripts/restart.*" in text
+    assert "scripts/logs.*" in text
+
+
+def test_network_unreachable_text_leaks_no_url_host_path_or_secret() -> None:
+    text = NetworkUnreachableError().user_message(8765)
+    for forbidden in ("://", "googleapis", "http", "/auth", "token", "query", "ya29", "127.0.0.1"):
+        assert forbidden not in text.lower()
+
+
+def test_network_unreachable_does_not_claim_the_condition_is_permanent() -> None:
+    assert "permanent" not in NetworkUnreachableError().user_message().lower()

@@ -12,9 +12,10 @@ import pytest
 from pydantic import ValidationError
 
 from gmail_mcp.auth import write_token
-from gmail_mcp.auth_state import AuthStatus, compute_auth_status
+from gmail_mcp.auth_state import DNS_FAILURE_WARNING, DNS_NEXT_STEP, AuthStatus, compute_auth_status
 from gmail_mcp.config import SCOPE_COMPOSE, SCOPE_READONLY, Settings
 from gmail_mcp.errors import auth_url
+from gmail_mcp.netcheck import PROBE_HOSTS
 from tests.conftest import FAKE_AUTH_TOKEN, FAKE_CLIENT_ID, FAKE_CLIENT_SECRET, FAKE_REFRESH_TOKEN
 
 SECRETS = (FAKE_REFRESH_TOKEN, FAKE_CLIENT_SECRET, FAKE_AUTH_TOKEN, FAKE_CLIENT_ID)
@@ -210,6 +211,7 @@ def test_status_fields_are_exact_and_pending_adds_no_detail(settings: Settings) 
     expected = {
         "state",
         "signed_in",
+        "network",
         "ready_to_retry",
         "checked_at",
         "sign_in_url",
@@ -266,3 +268,71 @@ def test_status_is_frozen(settings: Settings) -> None:
     assert isinstance(status, AuthStatus)
     with pytest.raises(ValidationError):  # assignment to a frozen model
         status.state = "signed_in"
+
+
+# --- network-failure-diagnostics R3: the network field, ready_to_retry and the DNS next step ----
+
+
+def test_network_defaults_to_ok_and_keeps_the_signed_in_payload(settings: Settings) -> None:
+    _signed_in_token(settings)
+    status = compute_auth_status(settings, None)
+    assert status.network == "ok"
+    assert status.ready_to_retry is True
+    assert status.next_step == "No action needed."
+    assert status.warnings == []
+
+
+@pytest.mark.parametrize("scenario", ["signed_in", *PROBLEM_SCENARIOS])
+def test_dns_failure_is_never_ready_to_retry(settings: Settings, scenario: str) -> None:
+    if scenario == "signed_in":
+        _signed_in_token(settings)
+        rejection = None
+    else:
+        rejection = _set_problem(settings, scenario)
+    status = compute_auth_status(settings, rejection, network="dns_failure")
+    assert status.network == "dns_failure"
+    assert status.ready_to_retry is False
+    assert status.signed_in == (scenario == "signed_in")
+
+
+def test_dns_failure_with_signed_in_token_gives_the_restart_instruction(settings: Settings) -> None:
+    _signed_in_token(settings)
+    status = compute_auth_status(settings, None, network="dns_failure")
+    assert status.state == "signed_in"
+    assert status.signed_in is True
+    assert status.next_step == DNS_NEXT_STEP
+    assert "scripts/restart." in status.next_step
+    assert "scripts/logs." in status.next_step
+    assert "Do not retry in a loop" in status.next_step
+    assert DNS_FAILURE_WARNING in status.warnings
+
+
+def test_dns_failure_keeps_the_token_problem_text_too(settings: Settings) -> None:
+    status = compute_auth_status(settings, None, network="dns_failure")
+    assert status.state == "not_signed_in"
+    assert status.next_step.startswith(DNS_NEXT_STEP)
+    assert "Open the sign-in page for the user:" in status.next_step
+    assert DNS_FAILURE_WARNING in status.warnings
+
+
+def test_dns_failure_does_not_change_the_state(settings: Settings) -> None:
+    rejection = _set_problem(settings, "rejected")
+    status = compute_auth_status(settings, rejection, network="dns_failure")
+    assert status.state == "rejected"
+    assert rejection is not None
+    assert status.rejected_at == rejection.isoformat()
+
+
+def test_dns_failure_text_names_no_host_or_secret(settings: Settings) -> None:
+    _signed_in_token(settings)
+    dumped = compute_auth_status(settings, None, network="dns_failure").model_dump_json()
+    for host in PROBE_HOSTS:
+        assert host not in dumped
+    for secret in SECRETS:
+        assert secret not in dumped
+
+
+def test_network_field_is_a_closed_literal(settings: Settings) -> None:
+    status = compute_auth_status(settings, None)
+    with pytest.raises(ValidationError):
+        AuthStatus.model_validate({**status.model_dump(), "network": "maybe"})

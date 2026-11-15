@@ -2,6 +2,8 @@
 
 Pure by design: it reads the token file's metadata and scopes through :func:`auth.read_token`,
 never contacts Google and never returns token values, client credentials or the bearer token.
+The DNS result (``network``) is measured by the caller (``server.py``) and passed in, so this
+module itself still does no I/O.
 """
 
 from __future__ import annotations
@@ -27,6 +29,11 @@ REJECTED_CAUSES_WARNING: Final = (
     "Likely causes: the 7-day expiry of Testing-mode consent screens; access revoked at "
     "myaccount.google.com/permissions; or a password change. Sign in again to fix it."
 )
+DNS_FAILURE_WARNING: Final = "Google hostnames could not be resolved from the server container."
+DNS_NEXT_STEP: Final = (
+    "Google hostnames could not be resolved from the server container. Do not retry in a loop: "
+    "ask the user to run scripts/restart.* (logs: scripts/logs.*), then call auth_status again."
+)
 AuthState = Literal[
     "signed_in",
     "not_signed_in",
@@ -35,6 +42,7 @@ AuthState = Literal[
     "rejected",
     "sign_in_in_progress",
 ]
+NetworkState = Literal["ok", "dns_failure"]
 
 
 class AuthStatus(BaseModel):
@@ -44,6 +52,7 @@ class AuthStatus(BaseModel):
 
     state: AuthState
     signed_in: bool
+    network: NetworkState
     ready_to_retry: bool
     checked_at: str
     sign_in_url: str
@@ -115,6 +124,7 @@ def compute_auth_status(
     settings: Settings,
     rejection: dt.datetime | None,
     sign_in_pending: bool = False,
+    network: NetworkState = "ok",
 ) -> AuthStatus:
     """Describe the sign-in state and the exact next step. Never raises for auth problems.
 
@@ -123,6 +133,8 @@ def compute_auth_status(
     credentials since the last successful sign-in (``GmailClient.rejected_at``).
     ``sign_in_pending`` is True while an unexpired sign-in attempt is open (``PendingStore``); it
     replaces every problem state with ``sign_in_in_progress`` and never changes ``signed_in``.
+    ``network`` is the DNS probe result measured by the caller. ``dns_failure`` is never retried:
+    ``ready_to_retry`` requires ``network == "ok"`` as well as ``signed_in``.
     """
     path = Path(settings.token_path)
     rejection = _effective_rejection(path, rejection)
@@ -138,11 +150,17 @@ def compute_auth_status(
         warnings.append(EXPIRY_WARNING)
     if rejection is not None:
         warnings.append(REJECTED_CAUSES_WARNING)
+    if network == "dns_failure":
+        warnings.append(DNS_FAILURE_WARNING)
     signed_in = state == "signed_in"
+    next_step = _next_step(state, url)
+    if network == "dns_failure":
+        next_step = DNS_NEXT_STEP if signed_in else f"{DNS_NEXT_STEP} {next_step}"
     return AuthStatus(
         state=state,
         signed_in=signed_in,
-        ready_to_retry=signed_in,
+        network=network,
+        ready_to_retry=signed_in and network == "ok",
         checked_at=dt.datetime.now(dt.UTC).isoformat(),
         sign_in_url=url,
         scopes_granted=granted,
@@ -150,7 +168,7 @@ def compute_auth_status(
         token_age_days=None if age is None else round(age, 2),
         rejected_at=None if rejection is None else rejection.isoformat(),
         warnings=warnings,
-        next_step=_next_step(state, url),
+        next_step=next_step,
         open_commands={
             "windows": f'Start-Process "{url}"',
             "macos": f'open "{url}"',

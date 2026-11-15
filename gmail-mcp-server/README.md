@@ -18,7 +18,7 @@ drafts - and nothing else.**
 | `list_labels` | Label id, name, type |
 | `list_drafts` | Draft id, subject, recipients, snippet |
 | `create_draft` | Creates a **draft** (optionally threaded as a reply). Never sends |
-| `auth_status` | Read-only sign-in state: signed in or not, granted/missing scopes, token age, recent rejection, and the exact next step. Never contacts Google and never returns credentials |
+| `auth_status` | Read-only sign-in state: signed in or not, granted/missing scopes, token age, recent rejection, DNS health (`network`), and the exact next step. It only resolves the Google hostnames (no requests to Google) and never returns credentials |
 
 The server also publishes four read-only **resources**: `gmail://auth/status` (the same JSON as
 `auth_status`), `gmail://guide/auth` (the sign-in procedure for agents), `gmail://guide/search`
@@ -153,9 +153,10 @@ How the sign-in is offered:
   Selenium) on the Google sign-in page and never to type or capture credentials. These are
   instructions in the text, not enforcement; you approve access in your own browser.
 - **`auth_status`** tells you the state (`signed_in`, `not_signed_in`, `token_unreadable`,
-  `scopes_insufficient`, `rejected` or `sign_in_in_progress`), `ready_to_retry` (true only when
-  `signed_in`), `checked_at` (the UTC time the status was computed), the scopes, the token age,
-  any warnings and the next step. `sign_in_in_progress` means a sign-in page was opened and has not
+  `scopes_insufficient`, `rejected` or `sign_in_in_progress`), `network` (`ok`, or `dns_failure`
+  when the Google hostnames do not resolve in the server container), `ready_to_retry` (true only
+  when `signed_in` and `network` is `ok`), `checked_at` (the UTC time the status was computed), the
+  scopes, the token age, any warnings and the next step. `sign_in_in_progress` means a sign-in page was opened and has not
   finished yet. The `gmail://auth/status` resource carries the same information.
 
 Alternatively run `scripts/auth.ps1` (Windows) or
@@ -206,6 +207,7 @@ at startup with a message that names the setting but never echoes secret values.
 | `MAX_BODY_CHARS` | no | `20000` | Truncation limit for returned bodies |
 | `HOST_PORT` | no | `8765` | Host port on 127.0.0.1 (read by compose and the scripts, and by the server to build the sign-in link and OAuth redirect URI) |
 | `AUTH_URL_ELICITATION` | no | `true` | Kill switch: when `false`, sign-in is offered only as the `AUTH_REQUIRED` tool error, never as a URL elicitation |
+| `CONTAINER_DNS_1` / `CONTAINER_DNS_2` | no | `8.8.8.8` / `1.1.1.1` | Resolvers the container uses (compose `dns:`). Read by compose from `.env` for interpolation, not by the server. Set them to your own resolver if you prefer |
 
 If you narrow `GMAIL_SCOPES` (for example to read-only), `create_draft` is **still listed** by the
 server but every call will fail with a Gmail 403; tools needing a missing scope behave the same.
@@ -229,6 +231,28 @@ declares `httpx2>=2.5.0` and `mcp-types==2.2.0`. Dependencies are pinned with ha
 the image installs them with `pip --require-hashes --only-binary=:all:`. The base image is pinned
 to the `python:3.12-slim` minor tag; to pin the digest too, see the comment at the top of the
 `Dockerfile`. Run `make audit` regularly (and after each `make lock`).
+
+## Network triage
+
+Gmail calls fail with a transport or name-resolution error while `/healthz` still answers: the
+container has lost DNS (after sleep, hibernate or a VPN reconnect). The healthcheck now also probes
+DNS for `gmail.googleapis.com` and `oauth2.googleapis.com`, so `docker ps` shows `unhealthy` in that case.
+
+1. Read the reason: `scripts/logs.sh` (or `.ps1`). Failed Gmail calls appear in the server log with an
+   `outcome` such as `TransportError`, or `dns_failure` when the Google hostnames did not resolve.
+2. Ask the server: call the `auth_status` tool. It only resolves the Google hostnames (no requests
+   to Google), so it shows whether sign-in is the problem and whether DNS is the problem (`network`).
+   A failed Gmail call on DNS returns the `NETWORK_UNREACHABLE` error; do not retry it in a loop.
+   Retry only when `ready_to_retry` is true.
+3. Restart if `auth_status` reports `network: dns_failure`, or if the container still fails: `scripts/restart.sh`
+   (or `.ps1`); use `--recreate` after editing `.env`. A DNS failure may be temporary, so the
+   error does not claim it is permanent.
+
+`unhealthy` is a label only. Docker does **not** restart an unhealthy container here, and nothing in
+this server restarts itself on failure. Setting `CONTAINER_DNS_1` and `CONTAINER_DNS_2` makes the
+container use explicit resolvers instead of inheriting the host's, which prevents the most common
+cause. Split-DNS names (such as `*.ts.net`) do not resolve in the container by default; the server
+needs none.
 
 ## Troubleshooting
 

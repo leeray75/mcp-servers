@@ -16,7 +16,7 @@ from mcp import Client
 from starlette.applications import Starlette
 
 from gmail_mcp.config import Settings
-from gmail_mcp.errors import AuthRequiredError, GmailApiError
+from gmail_mcp.errors import AuthRequiredError, GmailApiError, NetworkUnreachableError
 from gmail_mcp.gmail_client import GmailClient
 from gmail_mcp.server import create_app, create_server
 from tests.conftest import FAKE_AUTH_TOKEN, FakeGmail, make_message
@@ -453,3 +453,14 @@ async def test_every_auth_decision_goes_through_hmac_compare_digest(
     assert len(results) == 1  # exactly one constant-time comparison per request
     assert (response.status_code == 200) is should_pass
     assert results[0] is should_pass
+
+
+async def test_network_unreachable_is_a_clear_tool_error(settings: Settings) -> None:
+    fake = _Boom(NetworkUnreachableError())
+    async with Client(create_server(settings, _as_client(fake))) as client:
+        result = await client.call_tool("list_labels", {})
+    assert result.is_error is True
+    text = result.content[0].text  # type: ignore[union-attr]
+    assert "NETWORK_UNREACHABLE: DNS resolution failed" in text
+    assert "AUTH_REQUIRED" not in text
+    assert "try again shortly" not in text

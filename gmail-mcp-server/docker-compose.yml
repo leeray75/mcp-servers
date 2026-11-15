@@ -35,17 +35,14 @@ services:
     env_file: .env
     environment:
       <<: *app-env
+    dns: ["${CONTAINER_DNS_1:-8.8.8.8}", "${CONTAINER_DNS_2:-1.1.1.1}"]
     ports:
       - "127.0.0.1:${HOST_PORT:-8765}:8000"
     volumes:
       - ./data:/data
     restart: unless-stopped
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"
+      test: ["CMD", "python", "-m", "gmail_mcp.healthcheck"]
       interval: 30s
       timeout: 5s
       start_period: 30s
@@ -66,6 +63,7 @@ services:
     env_file: .env
     environment:
       <<: *app-env
+    dns: ["${CONTAINER_DNS_1:-8.8.8.8}", "${CONTAINER_DNS_2:-1.1.1.1}"]
     command: ["python", "-m", "gmail_mcp.auth_cli"]
     volumes:
       - ./data:/data
